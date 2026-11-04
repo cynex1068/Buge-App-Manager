@@ -201,7 +201,7 @@ class ActivityRepository(
     )
 
 
-    private fun countIntentFilters(info: ActivityInfo): Int = info.intentFilterCount
+    private fun countIntentFilters(@Suppress("UNUSED_PARAMETER") info: ActivityInfo): Int = 0
 
     fun launchActivity(packageName: String, className: String): Boolean = try {
         val intent = Intent().apply {
