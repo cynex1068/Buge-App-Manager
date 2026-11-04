@@ -49,7 +49,7 @@ class ActivityRepository(
                     val hasActivities = if (!forceRefresh && cacheDao.isValidFor(pkg.packageName, versionCode, CACHE_TTL_MS)) {
                         true
                     } else {
-                        resolvePackageInfo(pkg.packageName)?.activities?.isNotEmpty() == true
+                        pkg.activities?.isNotEmpty() == true || resolvePackageInfo(pkg.packageName)?.activities?.isNotEmpty() == true
                     }
                     if (!hasActivities) return@mapNotNull null
 
@@ -152,30 +152,28 @@ class ActivityRepository(
             }
         }.getOrNull()
 
-        if (info != null && info.applicationInfo?.enabled == true) return info
-        return archiveInfo(packageName) ?: info
+        val declared = info?.activities
+        if (!declared.isNullOrEmpty()) return info
+
+        val archive = archiveInfo(packageName) ?: return info
+        if (!archive.activities.isNullOrEmpty()) return archive
+        return info ?: archive
     }
 
     private fun archiveInfo(packageName: String): PackageInfo? = runCatching {
-        val appInfo = if (isAtLeastT()) {
-            pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
-        } else {
-            @Suppress("DEPRECATION")
-            pm.getApplicationInfo(packageName, 0)
-        }
-
+        @Suppress("DEPRECATION")
+        val appInfo = pm.getApplicationInfo(packageName, PackageManager.GET_META_DATA)
         val path = appInfo.publicSourceDir ?: appInfo.sourceDir ?: return@runCatching null
-        val apk = File(path)
-        if (!apk.exists()) return@runCatching null
+        if (!File(path).exists()) return@runCatching null
 
         if (isAtLeastT()) {
             pm.getPackageArchiveInfo(
-                apk.absolutePath,
+                path,
                 PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong())
             )
         } else {
             @Suppress("DEPRECATION")
-            pm.getPackageArchiveInfo(apk.absolutePath, PackageManager.GET_ACTIVITIES)
+            pm.getPackageArchiveInfo(path, PackageManager.GET_ACTIVITIES)
         }
     }.getOrNull()
 
@@ -200,8 +198,7 @@ class ActivityRepository(
         updatedAt = System.currentTimeMillis()
     )
 
-
-    private fun countIntentFilters(@Suppress("UNUSED_PARAMETER") info: ActivityInfo): Int = 0
+    private fun countIntentFilters(info: ActivityInfo): Int = 0
 
     fun launchActivity(packageName: String, className: String): Boolean = try {
         val intent = Intent().apply {
