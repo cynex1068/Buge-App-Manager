@@ -221,7 +221,9 @@ class ActivityRepository(
 
     private fun countIntentFilters(info: ActivityInfo): Int = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            info.intentFilters?.size ?: 0
+            val getter = ActivityInfo::class.java.getMethod("getIntentFilters")
+            val filters = getter.invoke(info) as? Array<*>
+            filters?.size ?: 0
         } else {
             if (info.exported) 1 else 0
         }
