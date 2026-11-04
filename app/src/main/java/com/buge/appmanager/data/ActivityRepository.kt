@@ -116,52 +116,22 @@ class ActivityRepository(private val context: Context) {
             LogManager.debug(context, "ActivityRepository: Total activities in manifest", "${activities.size}")
             
             val result = mutableListOf<ActivityDetail>()
-            
-            // Pre-load intent filter counts in batch to avoid per-activity queries
-            val intentFilterCounts = mutableMapOf<String, Int>()
-            
-            for (activityInfo in activities) {
-                val className = activityInfo.name
-                // Count intent filters by checking if the activity responds to any intent
-                var intentFilterCount = 0
-                try {
-                    // Use a more efficient approach - just check if there are any intent filters
-                    // without enumerating all of them individually
-                    val intent = Intent().apply { 
-                        setClassName(packageName, className)
-                        action = Intent.ACTION_MAIN
-                    }
-                    val resolveInfoList = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        pm.queryIntentActivities(intent, 0)
-                    }
-                    // If activity can be resolved, it has at least one intent filter
-                    intentFilterCount = if (resolveInfoList.isNotEmpty()) 1 else 0
-                } catch (e: Exception) {
-                    intentFilterCount = 0
-                }
-                intentFilterCounts[className] = intentFilterCount
-            }
-            
+
             var exportedCount = 0
             var undeclaredCount = 0
-            
+
             for (activityInfo in activities) {
                 val className = activityInfo.name
-                val intentFilterCount = intentFilterCounts[className] ?: 0
-                
+
                 val activity = ActivityDetail(
-                    name = try { 
+                    name = try {
                         val label = activityInfo.loadLabel(pm)
                         if (label.isNullOrEmpty()) activityInfo.name.substringAfterLast(".") else label.toString()
-                    } catch (e: Exception) { 
-                        activityInfo.name.substringAfterLast(".") 
+                    } catch (e: Exception) {
+                        activityInfo.name.substringAfterLast(".")
                     },
                     className = className,
                     isExported = activityInfo.exported,
-                    intentFilterCount = intentFilterCount,
                     permission = activityInfo.permission ?: "None",
                     launchMode = getLaunchModeString(activityInfo.launchMode),
                     parentActivityName = activityInfo.parentActivityName ?: "None"

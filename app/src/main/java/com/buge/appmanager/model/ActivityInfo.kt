@@ -16,7 +16,6 @@ data class ActivityDetail(
     val name: String,
     val className: String,
     val isExported: Boolean,
-    val intentFilterCount: Int,
     val permission: String,
     val launchMode: String,
     val parentActivityName: String
