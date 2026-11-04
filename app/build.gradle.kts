@@ -9,7 +9,7 @@ import java.io.FileInputStream
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.parcelize)
-    kotlin("kapt")
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -85,10 +85,6 @@ kotlin {
     }
 }
 
-kapt {
-    correctErrorTypes = true
-}
-
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -114,5 +110,5 @@ dependencies {
     implementation(libs.lsposed.hiddenapibypass)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
-    kapt(libs.androidx.room.compiler)
+    ksp(libs.androidx.room.compiler)
 }
