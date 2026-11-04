@@ -22,7 +22,7 @@ okhttp = "4.12.0"
 viewpager2 = "1.1.0"
 hiddenapibypass = "6.1"
 room = "2.6.1"
-ksp = "2.2.21-2.0.4"
+ksp = "2.3.6"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
