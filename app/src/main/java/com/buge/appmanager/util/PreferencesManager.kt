@@ -12,7 +12,8 @@ object PreferencesManager {
     private const val PREFS_NAME = "app_preferences"
     private const val THEME_MODE_KEY = "theme_mode"
     private const val SHOW_SYSTEM_APPS_KEY = "show_system_apps"
-    private const val SHOW_UNDECLARED_ACTIVITIES_KEY = "show_undeclared_activities"
+    private const val SHOW_NOT_EXPORTED_KEY = "show_not_exported_activities"
+    private const val LEGACY_SHOW_UNDECLARED_KEY = "show_undeclared_activities"
     private const val SHOW_DISABLED_APPS_KEY = "show_disabled_apps"
     private const val DEFAULT_PAGE_KEY = "default_page"
     private const val ALLOW_SYSTEM_OPS_KEY = "allow_system_ops"
@@ -57,6 +58,17 @@ object PreferencesManager {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
+    private fun migrate(context: Context) {
+        val prefs = getPreferences(context)
+        if (!prefs.contains(SHOW_NOT_EXPORTED_KEY) && prefs.contains(LEGACY_SHOW_UNDECLARED_KEY)) {
+            val legacy = prefs.getBoolean(LEGACY_SHOW_UNDECLARED_KEY, true)
+            prefs.edit()
+                .putBoolean(SHOW_NOT_EXPORTED_KEY, legacy)
+                .remove(LEGACY_SHOW_UNDECLARED_KEY)
+                .apply()
+        }
+    }
+
     fun setThemeMode(context: Context, mode: Int) {
         getPreferences(context).edit().putInt(THEME_MODE_KEY, mode).apply()
         AppCompatDelegate.setDefaultNightMode(mode)
@@ -77,12 +89,13 @@ object PreferencesManager {
         return getPreferences(context).getBoolean(SHOW_SYSTEM_APPS_KEY, false)
     }
 
-    fun setShowUndeclaredActivities(context: Context, show: Boolean) {
-        getPreferences(context).edit().putBoolean(SHOW_UNDECLARED_ACTIVITIES_KEY, show).apply()
+    fun setShowNotExportedActivities(context: Context, show: Boolean) {
+        getPreferences(context).edit().putBoolean(SHOW_NOT_EXPORTED_KEY, show).apply()
     }
 
-    fun getShowUndeclaredActivities(context: Context): Boolean {
-        return getPreferences(context).getBoolean(SHOW_UNDECLARED_ACTIVITIES_KEY, true)
+    fun getShowNotExportedActivities(context: Context): Boolean {
+        migrate(context)
+        return getPreferences(context).getBoolean(SHOW_NOT_EXPORTED_KEY, true)
     }
 
     fun setShowDisabledApps(context: Context, show: Boolean) {

@@ -199,7 +199,7 @@ object BackupManager {
             "default_page" to PreferencesManager.getDefaultPage(context),
             "show_system_apps" to PreferencesManager.getShowSystemApps(context),
             "show_disabled_apps" to PreferencesManager.getShowDisabledApps(context),
-            "show_undeclared_activities" to PreferencesManager.getShowUndeclaredActivities(context),
+            "show_not_exported_activities" to PreferencesManager.getShowNotExportedActivities(context),
             "allow_system_ops" to PreferencesManager.getAllowSystemOps(context),
             "auto_update" to PreferencesManager.getAutoUpdate(context),
             "logging_enabled" to PreferencesManager.getLoggingEnabled(context),
@@ -215,7 +215,8 @@ object BackupManager {
             "backup_interval_hours" to PreferencesManager.getBackupIntervalHours(context),
             "backup_location" to PreferencesManager.getBackupLocation(context),
             "auto_backup_on_launch" to PreferencesManager.getAutoBackupOnLaunch(context),
-            "backup_content_mode" to PreferencesManager.getBackupContentMode(context)
+            "backup_content_mode" to PreferencesManager.getBackupContentMode(context),
+            "dangerous_packages_warning" to PreferencesManager.getDangerousPackagesWarning(context)
         )
     }
 
@@ -237,7 +238,7 @@ object BackupManager {
         PreferencesManager.setDefaultPage(context, getString("default_page", "apps"))
         PreferencesManager.setShowSystemApps(context, getBool("show_system_apps", false))
         PreferencesManager.setShowDisabledApps(context, getBool("show_disabled_apps", true))
-        PreferencesManager.setShowUndeclaredActivities(context, getBool("show_undeclared_activities", true))
+        PreferencesManager.setShowNotExportedActivities(context, getBool("show_not_exported_activities", getBool("show_undeclared_activities", true)))
         PreferencesManager.setAllowSystemOps(context, getBool("allow_system_ops", true))
         PreferencesManager.setAutoUpdate(context, getBool("auto_update", true))
         PreferencesManager.setLoggingEnabled(context, getBool("logging_enabled", false))
@@ -254,5 +255,6 @@ object BackupManager {
         PreferencesManager.setBackupLocation(context, getString("backup_location", ""))
         PreferencesManager.setAutoBackupOnLaunch(context, getBool("auto_backup_on_launch", false))
         PreferencesManager.setBackupContentMode(context, getString("backup_content_mode", PreferencesManager.BACKUP_CONTENT_SETTINGS))
+        PreferencesManager.setDangerousPackagesWarning(context, getBool("dangerous_packages_warning", false))
     }
 }

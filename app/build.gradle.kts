@@ -9,6 +9,7 @@ import java.io.FileInputStream
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.parcelize)
+    kotlin("kapt")
 }
 
 android {
@@ -84,6 +85,10 @@ kotlin {
     }
 }
 
+kapt {
+    correctErrorTypes = true
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -107,4 +112,7 @@ dependencies {
     implementation(libs.google.gson)
     implementation(libs.squareup.okhttp)
     implementation(libs.lsposed.hiddenapibypass)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    kapt(libs.androidx.room.compiler)
 }

@@ -6,210 +6,241 @@ package com.buge.appmanager.data
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
-import android.util.Log
+import android.os.Build
 import com.buge.appmanager.model.ActivityDetail
 import com.buge.appmanager.model.AppInfo
 import com.buge.appmanager.util.LogManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.io.File
 
-class ActivityRepository(private val context: Context) {
+class ActivityRepository(
+    private val context: Context,
+    private val cacheDao: ActivityCacheDao
+) {
     private val pm: PackageManager = context.packageManager
 
     companion object {
         private const val TAG = "ActivityRepository"
+        private const val PARALLELISM = 4
+        private const val CACHE_TTL_MS = 0L
     }
 
-    suspend fun getInstalledAppsWithActivities(showSystemApps: Boolean): List<AppInfo> = withContext(Dispatchers.IO) {
+    suspend fun getInstalledAppsWithActivities(
+        showSystemApps: Boolean,
+        forceRefresh: Boolean = false
+    ): List<AppInfo> = withContext(Dispatchers.IO) {
         try {
-            LogManager.info(context, "ActivityRepository: Getting apps with activities", "ShowSystemApps: $showSystemApps")
-            
-            val allApps = mutableListOf<AppInfo>()
-            
-            val packages = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            LogManager.info(context, "ActivityRepository: getting apps", "showSystem=$showSystemApps, refresh=$forceRefresh")
+
+            val installed: List<PackageInfo> = if (isAtLeastT()) {
                 pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(0))
             } else {
                 @Suppress("DEPRECATION")
                 pm.getInstalledPackages(0)
             }
-            
-            LogManager.debug(context, "ActivityRepository: Total packages", "${packages.size}")
-            
-            for (pkgInfo in packages) {
-                try {
-                    val packageName = pkgInfo.packageName
-                    val appInfo = pm.getApplicationInfo(packageName, 0)
-                    val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                    
-                    if (!showSystemApps && isSystem) {
-                        continue
-                    }
-                    
-                    // Check if app has any activities - lightweight check
-                    val hasActivities = try {
-                        val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                            pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong()))
-                        } else {
-                            @Suppress("DEPRECATION")
-                            pm.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES)
+
+            val semaphore = Semaphore(PARALLELISM)
+            val apps = coroutineScope {
+                installed.map { pkg ->
+                    async {
+                        semaphore.withPermit {
+                            try {
+                                val appInfo = pm.getApplicationInfo(pkg.packageName, 0)
+                                val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                                if (!showSystemApps && isSystem) return@withPermit null
+
+                                val hasActivities = if (!forceRefresh && cacheDao.hasCache(pkg.packageName) > 0) {
+                                    true
+                                } else {
+                                    resolvePackageInfo(pkg.packageName)?.activities?.isNotEmpty() == true
+                                }
+                                if (!hasActivities) return@withPermit null
+
+                                AppInfo(
+                                    packageName = pkg.packageName,
+                                    appName = pm.getApplicationLabel(appInfo).toString(),
+                                    versionName = pkg.versionName ?: "",
+                                    versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+                                        pkg.longVersionCode else {
+                                        @Suppress("DEPRECATION") pkg.versionCode.toLong()
+                                    },
+                                    icon = runCatching { pm.getApplicationIcon(pkg.packageName) }.getOrNull(),
+                                    isSystemApp = isSystem,
+                                    isEnabled = appInfo.enabled,
+                                    installTime = pkg.firstInstallTime,
+                                    updateTime = pkg.lastUpdateTime,
+                                    targetSdkVersion = appInfo.targetSdkVersion,
+                                    minSdkVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
+                                        appInfo.minSdkVersion else 0,
+                                    apkPath = appInfo.sourceDir ?: ""
+                                )
+                            } catch (e: Exception) {
+                                LogManager.warning(context, "ActivityRepository: app info failed", "${pkg.packageName}: ${e.message}")
+                                null
+                            }
                         }
-                        val activities = packageInfo?.activities
-                        activities != null && activities.isNotEmpty()
-                    } catch (e: Exception) {
-                        false
                     }
-                    
-                    if (!hasActivities) {
-                        continue
-                    }
-                    
-                    allApps.add(
-                        AppInfo(
-                            packageName = packageName,
-                            appName = pm.getApplicationLabel(appInfo).toString(),
-                            versionName = pkgInfo.versionName ?: "",
-                            versionCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                                pkgInfo.longVersionCode
-                            } else {
-                                @Suppress("DEPRECATION")
-                                pkgInfo.versionCode.toLong()
-                            },
-                            icon = try { pm.getApplicationIcon(packageName) } catch (e: Exception) { null },
-                            isSystemApp = isSystem,
-                            isEnabled = appInfo.enabled,
-                            installTime = pkgInfo.firstInstallTime,
-                            updateTime = pkgInfo.lastUpdateTime,
-                            targetSdkVersion = appInfo.targetSdkVersion,
-                            minSdkVersion = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                                appInfo.minSdkVersion
-                            } else 0,
-                            apkPath = appInfo.sourceDir ?: ""
-                        )
-                    )
-                } catch (e: Exception) {
-                    LogManager.warning(context, "ActivityRepository: Error getting app info", "${pkgInfo.packageName}: ${e.message}")
-                }
+                }.awaitAll().filterNotNull()
             }
-            
-            val sorted = allApps.sortedBy { it.appName.lowercase() }
-            LogManager.info(context, "ActivityRepository: Apps with activities loaded", "Count: ${sorted.size}")
+
+            val sorted = apps.sortedBy { it.appName.lowercase() }
+            LogManager.info(context, "ActivityRepository: apps loaded", "count=${sorted.size}")
             sorted
         } catch (e: Exception) {
-            LogManager.error(context, "ActivityRepository: Error getting apps with activities", e.message)
+            LogManager.error(context, "ActivityRepository: get apps failed", e.message)
             emptyList()
         }
     }
 
-    suspend fun getAppActivities(packageName: String, showUndeclared: Boolean): List<ActivityDetail> = withContext(Dispatchers.IO) {
+    suspend fun getAppActivities(
+        packageName: String,
+        showNotExported: Boolean,
+        forceRefresh: Boolean = false
+    ): List<ActivityDetail> = withContext(Dispatchers.IO) {
         try {
-            LogManager.info(context, "ActivityRepository: Getting activities for app", "Package: $packageName, ShowUndeclared: $showUndeclared")
-            
-            val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong()))
+            LogManager.info(context, "ActivityRepository: loading activities", "pkg=$packageName, showNotExported=$showNotExported, refresh=$forceRefresh")
+
+            val versionCode = runCatching {
+                if (isAtLeastT()) {
+                    pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0)).longVersionCode
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getPackageInfo(packageName, 0).versionCode.toLong()
+                }
+            }.getOrDefault(-1L)
+
+            if (!forceRefresh && cacheDao.isValidFor(packageName, versionCode, CACHE_TTL_MS)) {
+                val cached = cacheDao.query(packageName)
+                val filtered = cached.filter { it.exported || showNotExported }
+                val sorted = filtered.map { it.toDetail() }.sortedBy { it.name.lowercase() }
+                LogManager.info(context, "ActivityRepository: cache hit", "pkg=$packageName, count=${sorted.size}")
+                return@withContext sorted
+            }
+
+            val pkgInfo = resolvePackageInfo(packageName) ?: return@withContext emptyList()
+            val activities = pkgInfo.activities ?: return@withContext emptyList()
+
+            val semaphore = Semaphore(PARALLELISM)
+            val entities = coroutineScope {
+                activities.map { info ->
+                    async {
+                        semaphore.withPermit { info.toCache(packageName, versionCode) }
+                    }
+                }.awaitAll()
+            }
+
+            cacheDao.replace(packageName, entities)
+
+            val filtered = entities.filter { it.exported || showNotExported }
+            val sorted = filtered.map { it.toDetail() }.sortedBy { it.name.lowercase() }
+            LogManager.info(context, "ActivityRepository: activities loaded", "pkg=$packageName, count=${sorted.size}")
+            sorted
+        } catch (e: Exception) {
+            LogManager.error(context, "ActivityRepository: activities failed", "pkg=$packageName, err=${e.message}")
+            emptyList()
+        }
+    }
+
+    private fun resolvePackageInfo(packageName: String): PackageInfo? {
+        val info = runCatching {
+            if (isAtLeastT()) {
+                pm.getPackageInfo(
+                    packageName,
+                    PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong())
+                )
             } else {
                 @Suppress("DEPRECATION")
                 pm.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES)
             }
-            val activities = packageInfo?.activities ?: return@withContext emptyList()
-            
-            LogManager.debug(context, "ActivityRepository: Total activities in manifest", "${activities.size}")
-            
-            val result = mutableListOf<ActivityDetail>()
-            
-            // Pre-load intent filter counts in batch to avoid per-activity queries
-            val intentFilterCounts = mutableMapOf<String, Int>()
-            
-            for (activityInfo in activities) {
-                val className = activityInfo.name
-                // Count intent filters by checking if the activity responds to any intent
-                var intentFilterCount = 0
-                try {
-                    // Use a more efficient approach - just check if there are any intent filters
-                    // without enumerating all of them individually
-                    val intent = Intent().apply { 
-                        setClassName(packageName, className)
-                        action = Intent.ACTION_MAIN
-                    }
-                    val resolveInfoList = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0))
-                    } else {
-                        @Suppress("DEPRECATION")
-                        pm.queryIntentActivities(intent, 0)
-                    }
-                    // If activity can be resolved, it has at least one intent filter
-                    intentFilterCount = if (resolveInfoList.isNotEmpty()) 1 else 0
-                } catch (e: Exception) {
-                    intentFilterCount = 0
-                }
-                intentFilterCounts[className] = intentFilterCount
-            }
-            
-            var exportedCount = 0
-            var undeclaredCount = 0
-            
-            for (activityInfo in activities) {
-                val className = activityInfo.name
-                val intentFilterCount = intentFilterCounts[className] ?: 0
-                
-                val activity = ActivityDetail(
-                    name = try { 
-                        val label = activityInfo.loadLabel(pm)
-                        if (label.isNullOrEmpty()) activityInfo.name.substringAfterLast(".") else label.toString()
-                    } catch (e: Exception) { 
-                        activityInfo.name.substringAfterLast(".") 
-                    },
-                    className = className,
-                    isExported = activityInfo.exported,
-                    intentFilterCount = intentFilterCount,
-                    permission = activityInfo.permission ?: "None",
-                    launchMode = getLaunchModeString(activityInfo.launchMode),
-                    parentActivityName = activityInfo.parentActivityName ?: "None"
-                )
-                
-                if (showUndeclared) {
-                    result.add(activity)
-                    undeclaredCount++
-                } else {
-                    if (activity.isExported) {
-                        result.add(activity)
-                        exportedCount++
-                    }
-                }
-            }
-            
-            val sorted = result.sortedBy { it.name.lowercase() }
-            LogManager.info(context, "ActivityRepository: Activities loaded", "Package: $packageName, Exported: $exportedCount, Undeclared: $undeclaredCount, Total: ${sorted.size}")
-            sorted
-        } catch (e: Exception) {
-            LogManager.error(context, "ActivityRepository: Error getting activities", "Package: $packageName, Error: ${e.message}")
-            emptyList()
+        }.getOrNull()
+
+        val enabled = info?.applicationInfo?.enabled ?: false
+        if (info == null || !enabled) {
+            return archiveInfo(packageName) ?: info
         }
+        return info
     }
 
-    private fun getLaunchModeString(launchMode: Int): String {
-        return when (launchMode) {
-            android.content.pm.ActivityInfo.LAUNCH_MULTIPLE -> "standard"
-            android.content.pm.ActivityInfo.LAUNCH_SINGLE_TOP -> "singleTop"
-            android.content.pm.ActivityInfo.LAUNCH_SINGLE_TASK -> "singleTask"
-            android.content.pm.ActivityInfo.LAUNCH_SINGLE_INSTANCE -> "singleInstance"
-            else -> "unknown"
+    private fun archiveInfo(packageName: String): PackageInfo? = runCatching {
+        val appInfo = if (isAtLeastT()) {
+            pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getApplicationInfo(packageName, 0)
         }
+
+        val apk = File(appInfo.publicSourceDir ?: appInfo.sourceDir ?: return@runCatching null)
+        if (!apk.exists()) return@runCatching null
+
+        if (isAtLeastT()) {
+            pm.getPackageArchiveInfo(
+                apk.absolutePath,
+                PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong())
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageArchiveInfo(apk.absolutePath, PackageManager.GET_ACTIVITIES)
+        }
+    }.getOrNull()
+
+    private fun ActivityInfo.toCache(pkg: String, versionCode: Long): ActivityCacheEntity {
+        val label = runCatching { loadLabel(pm)?.toString() }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: name.substringAfterLast('.')
+
+        return ActivityCacheEntity(
+            packageName = pkg,
+            className = name,
+            label = label,
+            exported = exported,
+            enabled = enabled,
+            permission = permission?.takeIf { it.isNotBlank() },
+            intentFilterCount = countIntentFilters(this),
+            launchMode = when (launchMode) {
+                ActivityInfo.LAUNCH_MULTIPLE -> "standard"
+                ActivityInfo.LAUNCH_SINGLE_TOP -> "singleTop"
+                ActivityInfo.LAUNCH_SINGLE_TASK -> "singleTask"
+                ActivityInfo.LAUNCH_SINGLE_INSTANCE -> "singleInstance"
+                else -> "unknown"
+            },
+            parentActivityName = parentActivityName ?: "None",
+            versionCode = versionCode,
+            updatedAt = System.currentTimeMillis()
+        )
     }
 
-    fun launchActivity(packageName: String, className: String): Boolean {
-        return try {
-            val componentName = ComponentName(packageName, className)
-            val intent = Intent().apply {
-                setComponent(componentName)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-            LogManager.info(context, "Activity launched", "Package: $packageName, Class: $className")
-            true
-        } catch (e: Exception) {
-            LogManager.error(context, "Error launching activity", "Package: $packageName, Class: $className, Error: ${e.message}")
-            false
+    private fun countIntentFilters(info: ActivityInfo): Int = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            info.intentFilters?.size ?: 0
+        } else {
+            if (info.exported) 1 else 0
         }
+    } catch (_: Throwable) {
+        if (info.exported) 1 else 0
     }
+
+    fun launchActivity(packageName: String, className: String): Boolean = try {
+        val intent = Intent().apply {
+            setComponent(ComponentName(packageName, className))
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        LogManager.info(context, "Activity launched", "pkg=$packageName, cls=$className")
+        true
+    } catch (e: Exception) {
+        LogManager.error(context, "launch failed", "pkg=$packageName, cls=$className, err=${e.message}")
+        false
+    }
+
+    private fun isAtLeastT() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 }

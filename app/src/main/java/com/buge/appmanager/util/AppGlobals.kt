@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.os.Build
 import androidx.core.content.res.ResourcesCompat
 import com.buge.appmanager.R
+import com.buge.appmanager.data.AppDatabase
 import com.buge.appmanager.shizuku.ShizukuManager
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 
@@ -45,7 +46,7 @@ class AppGlobals : Application() {
     override fun onCreate() {
         super.onCreate()
         _applicationContext = applicationContext
-        
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             HiddenApiBypass.setHiddenApiExemptions("")
         }
@@ -53,6 +54,8 @@ class AppGlobals : Application() {
         preloadTypefaces()
         ShizukuManager.restoreAssistantBackup()
         LogManager.init(this)
+
+        AppDatabase.get(this)
 
         if (PreferencesManager.getBackupEnabled(this) &&
             PreferencesManager.getAutoBackupOnLaunch(this)) {

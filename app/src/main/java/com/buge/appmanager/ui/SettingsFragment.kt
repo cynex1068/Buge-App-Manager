@@ -506,10 +506,10 @@ class SettingsFragment : Fragment() {
                         updateShizukuStatus()
                         LogManager.info(requireContext(), "Show system apps changed to $isChecked")
                     }
-                    switchItem.title == getString(R.string.pref_show_undeclared_activities) -> {
-                        PreferencesManager.setShowUndeclaredActivities(requireContext(), isChecked)
+                    switchItem.title == getString(R.string.pref_show_not_exported_activities) -> {
+                        PreferencesManager.setShowNotExportedActivities(requireContext(), isChecked)
                         SnackbarHelper.showSnackbar(binding.root, getString(R.string.setting_saved))
-                        LogManager.info(requireContext(), "Show undeclared activities changed to $isChecked")
+                        LogManager.info(requireContext(), "Show not exported activities changed to $isChecked")
                     }
                     switchItem.title == getString(R.string.pref_allow_system_ops) -> {
                         PreferencesManager.setAllowSystemOps(requireContext(), isChecked)
@@ -852,7 +852,7 @@ class SettingsFragment : Fragment() {
 
     private fun buildSettingItems(): MutableList<SettingItem> {
         val showSystemApps = PreferencesManager.getShowSystemApps(requireContext())
-        val showUndeclared = PreferencesManager.getShowUndeclaredActivities(requireContext())
+        val showNotExported = PreferencesManager.getShowNotExportedActivities(requireContext())
         val showDisabledApps = PreferencesManager.getShowDisabledApps(requireContext())
         val allowSystemOps = PreferencesManager.getAllowSystemOps(requireContext())
         val autoUpdate = PreferencesManager.getAutoUpdate(requireContext())
@@ -964,11 +964,11 @@ class SettingsFragment : Fragment() {
             SettingItem.SwitchItem(
                 getString(R.string.pref_dangerous_packages_warning),
                 dangerousPackagesWarning,
-                R.drawable.ic_warning
+                R.drawable.ic_warning_large
             ),
             SettingItem.SwitchItem(getString(R.string.pref_show_disabled_apps), showDisabledApps, R.drawable.ic_disabled_apps),
             SettingItem.SwitchItem(getString(R.string.pref_show_system_apps), showSystemApps, R.drawable.ic_system_apps),
-            SettingItem.SwitchItem(getString(R.string.pref_show_undeclared_activities), showUndeclared, R.drawable.ic_undeclared),
+            SettingItem.SwitchItem(getString(R.string.pref_show_not_exported_activities), showNotExported, R.drawable.ic_undeclared),
             SettingItem.Normal(getString(R.string.pref_logging), getString(R.string.pref_logging_summary), R.drawable.ic_log),
 
             SettingItem.Header(getString(R.string.settings_group_about)),

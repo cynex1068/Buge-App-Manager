@@ -69,7 +69,7 @@ class ActivityDetailActivity : BaseActivity() {
         setupRecyclerView()
         setupSearch()
         observeViewModel()
-        viewModel.loadActivities(packageName)
+        viewModel.load(packageName)
 
         LogManager.info(this, "Activity details opened", "Package: $packageName")
     }
