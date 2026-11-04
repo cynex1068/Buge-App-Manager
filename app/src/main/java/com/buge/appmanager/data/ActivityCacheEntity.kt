@@ -15,7 +15,9 @@ import com.buge.appmanager.model.ActivityDetail
 data class ActivityCacheEntity(
     val packageName: String,
     val className: String,
-    val label: String,
+    val labelRes: Int,
+    val nonLocalizedLabel: String?,
+    val fallbackLabel: String,
     val exported: Boolean,
     val enabled: Boolean,
     val permission: String?,
@@ -26,12 +28,14 @@ data class ActivityCacheEntity(
     val updatedAt: Long
 ) {
     fun toDetail() = ActivityDetail(
-        name = label,
+        name = fallbackLabel,
         className = className,
         isExported = exported,
         intentFilterCount = intentFilterCount,
         permission = permission ?: "None",
         launchMode = launchMode,
-        parentActivityName = parentActivityName
+        parentActivityName = parentActivityName,
+        labelRes = labelRes,
+        nonLocalizedLabel = nonLocalizedLabel
     )
 }

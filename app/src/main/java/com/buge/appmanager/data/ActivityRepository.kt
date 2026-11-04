@@ -22,6 +22,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.lang.reflect.Method
 
 class ActivityRepository(
     private val context: Context,
@@ -31,8 +32,16 @@ class ActivityRepository(
 
     companion object {
         private const val TAG = "ActivityRepository"
-        private const val PARALLELISM = 4
+        private const val PARALLELISM = 2
         private const val CACHE_TTL_MS = 0L
+
+        private val getIntentFiltersMethod: Method? by lazy {
+            try {
+                ActivityInfo::class.java.getMethod("getIntentFilters")
+            } catch (_: Throwable) {
+                null
+            }
+        }
     }
 
     suspend fun getInstalledAppsWithActivities(
@@ -43,10 +52,10 @@ class ActivityRepository(
             LogManager.info(context, "ActivityRepository: getting apps", "showSystem=$showSystemApps, refresh=$forceRefresh")
 
             val installed: List<PackageInfo> = if (isAtLeastT()) {
-                pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(0))
+                pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong()))
             } else {
                 @Suppress("DEPRECATION")
-                pm.getInstalledPackages(0)
+                pm.getInstalledPackages(PackageManager.GET_ACTIVITIES)
             }
 
             val semaphore = Semaphore(PARALLELISM)
@@ -55,20 +64,24 @@ class ActivityRepository(
                     async {
                         semaphore.withPermit {
                             try {
-                                val appInfo = pm.getApplicationInfo(pkg.packageName, 0)
+                                val appInfo = pkg.applicationInfo ?: return@withPermit null
                                 val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                                 if (!showSystemApps && isSystem) return@withPermit null
 
                                 val hasActivities = if (!forceRefresh && cacheDao.hasCache(pkg.packageName) > 0) {
                                     true
                                 } else {
-                                    resolvePackageInfo(pkg.packageName)?.activities?.isNotEmpty() == true
+                                    if (!pkg.activities.isNullOrEmpty()) {
+                                        true
+                                    } else {
+                                        resolvePackageInfo(pkg.packageName)?.activities?.isNotEmpty() == true
+                                    }
                                 }
                                 if (!hasActivities) return@withPermit null
 
                                 AppInfo(
                                     packageName = pkg.packageName,
-                                    appName = pm.getApplicationLabel(appInfo).toString(),
+                                    appName = runCatching { pm.getApplicationLabel(appInfo).toString() }.getOrDefault(pkg.packageName),
                                     versionName = pkg.versionName ?: "",
                                     versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
                                         pkg.longVersionCode else {
@@ -151,6 +164,24 @@ class ActivityRepository(
         }
     }
 
+    suspend fun resolveLabel(packageName: String, className: String, labelRes: Int, nonLocalizedLabel: String?, fallback: String): String = withContext(Dispatchers.IO) {
+        if (!nonLocalizedLabel.isNullOrBlank()) return@withContext nonLocalizedLabel
+        if (labelRes == 0) return@withContext fallback
+        try {
+            val pkgInfo = if (isAtLeastT()) {
+                pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES)
+            }
+            val ai = pkgInfo.activities?.firstOrNull { it.name == className } ?: return@withContext fallback
+            val label = runCatching { ai.loadLabel(pm)?.toString() }.getOrNull()
+            if (label.isNullOrBlank()) fallback else label
+        } catch (_: Exception) {
+            fallback
+        }
+    }
+
     private fun resolvePackageInfo(packageName: String): PackageInfo? {
         val info = runCatching {
             if (isAtLeastT()) {
@@ -194,14 +225,15 @@ class ActivityRepository(
     }.getOrNull()
 
     private fun ActivityInfo.toCache(pkg: String, versionCode: Long): ActivityCacheEntity {
-        val label = runCatching { loadLabel(pm)?.toString() }.getOrNull()
-            ?.takeIf { it.isNotBlank() }
-            ?: name.substringAfterLast('.')
+        val fallback = name.substringAfterLast('.')
+        val nonLocalized = nonLocalizedLabel?.toString()?.takeIf { it.isNotBlank() }
 
         return ActivityCacheEntity(
             packageName = pkg,
             className = name,
-            label = label,
+            labelRes = labelRes,
+            nonLocalizedLabel = nonLocalized,
+            fallbackLabel = fallback,
             exported = exported,
             enabled = enabled,
             permission = permission?.takeIf { it.isNotBlank() },
@@ -221,9 +253,13 @@ class ActivityRepository(
 
     private fun countIntentFilters(info: ActivityInfo): Int = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val getter = ActivityInfo::class.java.getMethod("getIntentFilters")
-            val filters = getter.invoke(info) as? Array<*>
-            filters?.size ?: 0
+            val m = getIntentFiltersMethod
+            if (m != null) {
+                val filters = m.invoke(info) as? Array<*>
+                filters?.size ?: 0
+            } else {
+                if (info.exported) 1 else 0
+            }
         } else {
             if (info.exported) 1 else 0
         }
