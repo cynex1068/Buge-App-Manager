@@ -140,26 +140,23 @@ class ActivityRepository(
         }
 
     private fun resolvePackageInfo(packageName: String): PackageInfo? {
-        val info = runCatching {
-            if (isAtLeastT()) {
-                pm.getPackageInfo(
-                    packageName,
-                    PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong())
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                pm.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES)
+        val info = queryPackageInfo(packageName, activityFlags())
+        if (info != null && !info.activities.isNullOrEmpty()) return info
+
+        val fallback = queryPackageInfo(packageName, PackageManager.GET_ACTIVITIES)
+        if (fallback != null) {
+            val resolvedActivities = resolveActivitiesViaIntent(packageName)
+            if (resolvedActivities.isNotEmpty()) {
+                fallback.activities = resolvedActivities
+                return fallback
             }
-        }.getOrNull()
+        }
 
-        val declared = info?.activities
-        if (!declared.isNullOrEmpty()) return info
+        val archive = archiveInfo(packageName)
+        if (archive != null && !archive.activities.isNullOrEmpty()) return archive
 
-        val archive = archiveInfo(packageName) ?: return info
-        if (!archive.activities.isNullOrEmpty()) return archive
-        return info ?: archive
+        return info ?: fallback
     }
-
     private fun archiveInfo(packageName: String): PackageInfo? = runCatching {
         @Suppress("DEPRECATION")
         val appInfo = pm.getApplicationInfo(packageName, PackageManager.GET_META_DATA)
@@ -169,13 +166,43 @@ class ActivityRepository(
         if (isAtLeastT()) {
             pm.getPackageArchiveInfo(
                 path,
-                PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong())
+                PackageManager.PackageInfoFlags.of(activityFlags().toLong())
             )
         } else {
             @Suppress("DEPRECATION")
-            pm.getPackageArchiveInfo(path, PackageManager.GET_ACTIVITIES)
+            pm.getPackageArchiveInfo(path, activityFlags())
         }
     }.getOrNull()
+
+
+    private fun activityFlags(): Int = PackageManager.GET_ACTIVITIES or
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            PackageManager.MATCH_DISABLED_COMPONENTS
+        } else {
+            0
+        }
+
+    private fun queryPackageInfo(packageName: String, flags: Int): PackageInfo? = runCatching {
+        if (isAtLeastT()) {
+            pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageInfo(packageName, flags)
+        }
+    }.getOrNull()
+
+    private fun resolveActivitiesViaIntent(packageName: String): Array<ActivityInfo> {
+        val intent = Intent(Intent.ACTION_MAIN).setPackage(packageName)
+        val resolved = runCatching {
+            if (isAtLeastT()) {
+                pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(activityFlags().toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.queryIntentActivities(intent, activityFlags())
+            }
+        }.getOrNull() ?: return emptyArray()
+        return resolved.mapNotNull { it.activityInfo }.distinctBy { it.name }.toTypedArray()
+    }
 
     private fun ActivityInfo.toCache(pkg: String, versionCode: Long) = ActivityCacheEntity(
         packageName = pkg,
