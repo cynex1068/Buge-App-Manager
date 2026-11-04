@@ -201,8 +201,7 @@ class ActivityRepository(
     )
 
 
-    private fun countIntentFilters(info: ActivityInfo): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) info.intentFilters.size else if (info.exported) 1 else 0
+    private fun countIntentFilters(info: ActivityInfo): Int = info.intentFilterCount
 
     fun launchActivity(packageName: String, className: String): Boolean = try {
         val intent = Intent().apply {
