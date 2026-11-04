@@ -20,19 +20,17 @@ import androidx.activity.viewModels
 import androidx.core.widget.addTextChangedListener
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import com.buge.appmanager.adapter.ActivityDetailAdapter
-import com.buge.appmanager.data.ActivityRepository
-import com.buge.appmanager.data.AppDatabase
 import com.buge.appmanager.databinding.ActivityActivityDetailBinding
 import com.buge.appmanager.model.ActivityDetail
 import com.buge.appmanager.shizuku.ShizukuManager
-import com.buge.appmanager.util.ActivityLabelResolver
 import com.buge.appmanager.util.LogManager
 import com.buge.appmanager.util.SnackbarHelper
+import com.buge.appmanager.util.SpringAnimationHelper
 import com.buge.appmanager.viewmodel.ActivityDetailViewModel
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class ActivityDetailActivity : BaseActivity() {
@@ -47,9 +45,10 @@ class ActivityDetailActivity : BaseActivity() {
     private lateinit var binding: ActivityActivityDetailBinding
     private val viewModel: ActivityDetailViewModel by viewModels()
     private lateinit var activitiesAdapter: ActivityDetailAdapter
-    private lateinit var repository: ActivityRepository
+    private var searchJob: Job? = null
     private var allActivities: List<ActivityDetail> = emptyList()
     private var packageName: String = ""
+    private var fontApplied = false
     private var searchQuery: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,7 +61,6 @@ class ActivityDetailActivity : BaseActivity() {
             return
         }
 
-        repository = ActivityRepository(this, AppDatabase.get(this).activityCacheDao())
         LogManager.info(this, "ActivityDetailActivity created", "Package: $packageName")
 
         setupBackPressedCallback()
@@ -72,6 +70,27 @@ class ActivityDetailActivity : BaseActivity() {
         setupSearch()
         observeViewModel()
         viewModel.load(packageName)
+
+        LogManager.info(this, "Activity details opened", "Package: $packageName")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (!fontApplied) {
+            fontApplied = true
+        }
+        LogManager.debug(this, "ActivityDetailActivity resumed", "Package: $packageName")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        LogManager.debug(this, "ActivityDetailActivity paused", "Package: $packageName")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        searchJob?.cancel()
+        LogManager.info(this, "ActivityDetailActivity destroyed", "Package: $packageName")
     }
 
     private fun setupBackPressedCallback() {
@@ -82,6 +101,7 @@ class ActivityDetailActivity : BaseActivity() {
                     binding.searchEditText.setText("")
                     searchQuery = ""
                     filterActivities("")
+                    LogManager.debug(this@ActivityDetailActivity, "Search cleared via back", "Package: $packageName")
                 } else {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -89,6 +109,7 @@ class ActivityDetailActivity : BaseActivity() {
             }
         }
         onBackPressedDispatcher.addCallback(this, callback)
+        LogManager.debug(this, "Back pressed callback setup", "ActivityDetailActivity")
     }
 
     private fun setupToolbar() {
@@ -96,6 +117,7 @@ class ActivityDetailActivity : BaseActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         supportActionBar?.setDisplayShowHomeEnabled(true)
         supportActionBar?.title = getString(R.string.title_activity_detail)
+        LogManager.debug(this, "Toolbar setup complete", "ActivityDetailActivity")
     }
 
     override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
@@ -118,11 +140,14 @@ class ActivityDetailActivity : BaseActivity() {
             binding.appIcon.setImageDrawable(icon)
         } catch (e: Exception) {
             binding.appIcon.setImageResource(android.R.drawable.sym_def_app_icon)
+            LogManager.warning(this, "Failed to load app icon", "Package: $packageName, Error: ${e.message}")
         }
 
         binding.appName.text = appName
         binding.packageName.text = packageName
         binding.systemBadge.visibility = if (isSystem) View.VISIBLE else View.GONE
+
+        LogManager.debug(this, "App info setup complete", "Package: $packageName, App: $appName, System: $isSystem")
     }
 
     private fun setupRecyclerView() {
@@ -130,60 +155,16 @@ class ActivityDetailActivity : BaseActivity() {
             onActivityClick = { activity ->
                 handleActivityClick(activity)
             },
-            onShortcutCreate = { activity, _ ->
+            onShortcutCreate = { activity, view ->
                 showShortcutDialog(activity)
             },
             canLaunchUnexported = {
                 ShizukuManager.isAuthorized()
-            },
-            onRequestResolveLabel = { activity ->
-                resolveLabelVisible(activity)
             }
         )
         binding.recyclerView.layoutManager = LinearLayoutManager(this)
         binding.recyclerView.adapter = activitiesAdapter
-
-        binding.recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                super.onScrolled(rv, dx, dy)
-                val lm = rv.layoutManager as? LinearLayoutManager ?: return
-                val first = lm.findFirstVisibleItemPosition()
-                val last = lm.findLastVisibleItemPosition()
-                if (first == RecyclerView.NO_POSITION || last == RecyclerView.NO_POSITION) return
-                for (i in first..last) {
-                    activitiesAdapter.currentList.getOrNull(i)?.let { resolveLabelVisible(it) }
-                }
-            }
-        })
-    }
-
-    private fun resolveLabelVisible(activity: ActivityDetail) {
-        val cached = ActivityLabelResolver.peek(packageName, activity.className)
-        if (cached != null) {
-            if (cached != activity.name) {
-                activitiesAdapter.updateNameByClassName(activity.className, cached)
-                val idx = allActivities.indexOfFirst { it.className == activity.className }
-                if (idx >= 0) {
-                    allActivities = allActivities.toMutableList().also { it[idx] = it[idx].copy(name = cached) }
-                }
-            }
-            return
-        }
-        ActivityLabelResolver.preloadVisible(
-            this,
-            repository,
-            lifecycleScope,
-            listOf(Triple(packageName, activity.className, Pair(activity.labelRes, activity.nonLocalizedLabel))),
-            onResolved = { pkg, cls, label ->
-                if (pkg == packageName) {
-                    activitiesAdapter.updateNameByClassName(cls, label)
-                    val idx = allActivities.indexOfFirst { it.className == cls }
-                    if (idx >= 0) {
-                        allActivities = allActivities.toMutableList().also { it[idx] = it[idx].copy(name = label) }
-                    }
-                }
-            }
-        )
+        LogManager.debug(this, "RecyclerView setup complete", "Package: $packageName")
     }
 
     private fun setupSearch() {
@@ -213,6 +194,8 @@ class ActivityDetailActivity : BaseActivity() {
                 false
             }
         }
+
+        LogManager.debug(this, "Search setup complete", "Package: $packageName")
     }
 
     private fun filterActivities(query: String) {
@@ -224,6 +207,7 @@ class ActivityDetailActivity : BaseActivity() {
                 it.className.contains(query, ignoreCase = true)
             }
             activitiesAdapter.submitList(filtered)
+            LogManager.debug(this, "Filter applied", "Package: $packageName, Query: $query, Results: ${filtered.size}")
         }
     }
 
@@ -237,8 +221,10 @@ class ActivityDetailActivity : BaseActivity() {
                 }
                 startActivity(intent)
                 SnackbarHelper.showSnackbar(binding.root, "Launching ${activity.name}")
+                LogManager.info(this, "Activity launched", "Package: $packageName, Activity: ${activity.className}")
             } catch (e: Exception) {
                 SnackbarHelper.showSnackbar(binding.root, "Failed to launch: ${e.message}")
+                LogManager.error(this, "Failed to launch activity", "Package: $packageName, Activity: ${activity.className}, Error: ${e.message}")
             }
         } else if (ShizukuManager.isRootMode() && ShizukuManager.isRootAvailable()) {
             launchUnexportedViaRoot(activity)
@@ -248,6 +234,7 @@ class ActivityDetailActivity : BaseActivity() {
             launchUnexportedViaShizuku(activity)
         } else {
             SnackbarHelper.showSnackbar(binding.root, "This activity is not exported and cannot be launched")
+            LogManager.warning(this, "Cannot launch unexported activity", "Package: $packageName, Activity: ${activity.className}")
         }
     }
 
@@ -257,8 +244,11 @@ class ActivityDetailActivity : BaseActivity() {
             val result = ShizukuManager.executeCommand("am start -n '$component'")
             if (result.success) {
                 SnackbarHelper.showSnackbar(binding.root, "Launching ${activity.name}")
+                LogManager.info(this@ActivityDetailActivity, "Unexported activity launched via root", "Package: $packageName, Activity: ${activity.className}")
             } else {
-                SnackbarHelper.showSnackbar(binding.root, "Failed to launch: ${result.error.ifBlank { "unknown error" }}")
+                val detail = result.error.ifBlank { "unknown error" }
+                SnackbarHelper.showSnackbar(binding.root, "Failed to launch: $detail")
+                LogManager.error(this@ActivityDetailActivity, "Failed to launch unexported activity", "Package: $packageName, Activity: ${activity.className}, Error: $detail")
             }
         }
     }
@@ -268,8 +258,11 @@ class ActivityDetailActivity : BaseActivity() {
             val result = ShizukuManager.launchUnexportedViaShizuku(packageName, activity.className)
             if (result.success) {
                 SnackbarHelper.showSnackbar(binding.root, "Launching ${activity.name}")
+                LogManager.info(this@ActivityDetailActivity, "Unexported activity launched via Shizuku", "Package: $packageName, Activity: ${activity.className}")
             } else {
-                SnackbarHelper.showSnackbar(binding.root, "Failed to launch: ${result.error.ifBlank { "unknown error" }}")
+                val detail = result.error.ifBlank { "unknown error" }
+                SnackbarHelper.showSnackbar(binding.root, "Failed to launch: $detail")
+                LogManager.error(this@ActivityDetailActivity, "Failed to launch unexported activity via Shizuku", "Package: $packageName, Activity: ${activity.className}, Error: $detail")
             }
         }
     }
@@ -279,6 +272,7 @@ class ActivityDetailActivity : BaseActivity() {
             SnackbarHelper.showSnackbar(binding.root, "This activity is not exported, cannot create shortcut")
             return
         }
+
         MaterialAlertDialogBuilder(this)
             .setTitle("Create Shortcut")
             .setMessage("Create shortcut for ${activity.name} on home screen?")
@@ -300,6 +294,7 @@ class ActivityDetailActivity : BaseActivity() {
                 createShortcutLegacy(activity, appName, appIcon)
             }
         } catch (e: Exception) {
+            LogManager.error(this, "Shortcut creation failed", e.message)
             SnackbarHelper.showSnackbar(binding.root, "Failed to create shortcut: ${e.message}")
         }
     }
@@ -309,12 +304,14 @@ class ActivityDetailActivity : BaseActivity() {
             val appInfo = packageManager.getApplicationInfo(packageName, 0)
             packageManager.getApplicationIcon(appInfo)
         } catch (e: Exception) {
+            LogManager.warning(this, "Failed to get app icon", e.message)
             null
         }
     }
 
     private fun drawableToBitmap(drawable: Drawable?): Bitmap? {
         if (drawable == null) return null
+
         return try {
             when (drawable) {
                 is BitmapDrawable -> drawable.bitmap
@@ -329,6 +326,7 @@ class ActivityDetailActivity : BaseActivity() {
                 }
             }
         } catch (e: Exception) {
+            LogManager.warning(this, "Failed to convert drawable to bitmap", e.message)
             null
         }
     }
@@ -357,11 +355,19 @@ class ActivityDetailActivity : BaseActivity() {
             }
         }
 
-        startActivityForResult(shortcutIntent, SHORTCUT_REQUEST_CODE)
+        try {
+            startActivityForResult(shortcutIntent, SHORTCUT_REQUEST_CODE)
+        } catch (e: Exception) {
+            LogManager.error(this, "Failed to start shortcut activity", e.message)
+            SnackbarHelper.showSnackbar(binding.root, "Failed to create shortcut: ${e.message}")
+        }
     }
 
     private fun createShortcutModern(activity: ActivityDetail, appName: String, appIcon: Drawable?) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return
+        }
+
         val shortcutManager = getSystemService(ShortcutManager::class.java)
 
         val intent = Intent().apply {
@@ -381,6 +387,7 @@ class ActivityDetailActivity : BaseActivity() {
             try {
                 shortcutBuilder.setIcon(Icon.createWithBitmap(iconBitmap))
             } catch (e: Exception) {
+                LogManager.warning(this, "Failed to set icon bitmap, using fallback", e.message)
                 shortcutBuilder.setIcon(Icon.createWithResource(this, android.R.drawable.ic_menu_edit))
             }
         } else {
@@ -390,7 +397,9 @@ class ActivityDetailActivity : BaseActivity() {
         try {
             shortcutManager.requestPinShortcut(shortcutBuilder.build(), null)
             SnackbarHelper.showSnackbar(binding.root, "Shortcut created")
+            LogManager.info(this, "Shortcut created", "Activity: ${activity.className}")
         } catch (e: Exception) {
+            LogManager.error(this, "Failed to pin shortcut", e.message)
             SnackbarHelper.showSnackbar(binding.root, "Failed to create shortcut: ${e.message}")
         }
     }
@@ -399,6 +408,7 @@ class ActivityDetailActivity : BaseActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == SHORTCUT_REQUEST_CODE && resultCode == RESULT_OK) {
             SnackbarHelper.showSnackbar(binding.root, "Shortcut created")
+            LogManager.info(this, "Shortcut created (legacy)", "Activity: $packageName")
         }
     }
 
@@ -409,14 +419,20 @@ class ActivityDetailActivity : BaseActivity() {
             val isEmpty = activities.isEmpty()
             binding.emptyState.visibility = if (isEmpty) View.VISIBLE else View.GONE
             binding.recyclerView.visibility = if (isEmpty) View.GONE else View.VISIBLE
+
+            LogManager.info(this, "Activities loaded for app", "Package: $packageName, Count: ${activities.size}, Empty: $isEmpty")
         }
 
         viewModel.isLoading.observe(this) { isLoading ->
             binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.GONE
+            if (isLoading) {
+                LogManager.debug(this, "Loading activities", "Package: $packageName")
+            }
         }
 
         viewModel.error.observe(this) { error ->
             if (error != null) {
+                LogManager.error(this, "Activity loading error", "Package: $packageName, Error: $error")
                 SnackbarHelper.showSnackbar(binding.root, "Failed to load activities: $error")
             }
         }

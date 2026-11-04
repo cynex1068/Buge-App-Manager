@@ -3,6 +3,10 @@
 
 package com.buge.appmanager.adapter
 
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.graphics.drawable.Icon
+import android.os.Build
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -15,12 +19,12 @@ import androidx.recyclerview.widget.RecyclerView
 import com.buge.appmanager.R
 import com.buge.appmanager.model.ActivityDetail
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 class ActivityDetailAdapter(
     private val onActivityClick: (ActivityDetail) -> Unit,
     private val onShortcutCreate: (ActivityDetail, View) -> Unit,
-    private val canLaunchUnexported: () -> Boolean = { false },
-    private val onRequestResolveLabel: (ActivityDetail) -> Unit = {}
+    private val canLaunchUnexported: () -> Boolean = { false }
 ) : ListAdapter<ActivityDetail, ActivityDetailAdapter.ActivityViewHolder>(ActivityDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ActivityViewHolder {
@@ -34,13 +38,11 @@ class ActivityDetailAdapter(
         holder.bind(activity)
         updateItemBackground(holder, position)
 
-        if (activity.labelRes != 0 || !activity.nonLocalizedLabel.isNullOrBlank()) {
-            onRequestResolveLabel(activity)
-        }
-
+        // Fuck: clear old listeners to avoid multiple registration
         holder.itemView.setOnLongClickListener(null)
         holder.itemView.setOnClickListener(null)
 
+        // Click listener
         holder.itemView.setOnClickListener {
             val pos = holder.adapterPosition
             if (pos != RecyclerView.NO_POSITION) {
@@ -49,6 +51,7 @@ class ActivityDetailAdapter(
             }
         }
 
+        // Long click listener for shortcut creation
         holder.itemView.setOnLongClickListener { view ->
             val pos = holder.adapterPosition
             if (pos != RecyclerView.NO_POSITION) {
@@ -95,22 +98,13 @@ class ActivityDetailAdapter(
         container.setBackgroundResource(background)
     }
 
-    fun updateNameByClassName(className: String, newName: String) {
-        val idx = currentList.indexOfFirst { it.className == className }
-        if (idx >= 0) {
-            val old = currentList[idx]
-            if (old.name != newName) {
-                val updated = old.copy(name = newName)
-                val newList = currentList.toMutableList()
-                newList[idx] = updated
-                submitList(newList.toList())
-            }
-        }
+    override fun submitList(list: List<ActivityDetail>?) {
+        super.submitList(list)
     }
 
     inner class ActivityViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val exportIcon: ImageView = itemView.findViewById(R.id.export_icon)
-        val activityName: TextView = itemView.findViewById(R.id.activity_name)
+        private val activityName: TextView = itemView.findViewById(R.id.activity_name)
         private val className: TextView = itemView.findViewById(R.id.class_name)
         private val exportStatus: TextView = itemView.findViewById(R.id.export_status)
         private val launchMode: TextView = itemView.findViewById(R.id.launch_mode)
@@ -122,6 +116,8 @@ class ActivityDetailAdapter(
             val shortClassName = activity.className.substringAfterLast(".")
             className.text = shortClassName
 
+            // A non-exported activity is normally unserializable, but the root
+            // backend can start it via `am start`, so allow launching then.
             val launchable = activity.isExported || canLaunchUnexported()
 
             if (activity.isExported) {

@@ -17,7 +17,6 @@ data class ActivityCacheEntity(
     val className: String,
     val labelRes: Int,
     val nonLocalizedLabel: String?,
-    val fallbackLabel: String,
     val exported: Boolean,
     val enabled: Boolean,
     val permission: String?,
@@ -27,15 +26,17 @@ data class ActivityCacheEntity(
     val versionCode: Long,
     val updatedAt: Long
 ) {
-    fun toDetail() = ActivityDetail(
-        name = fallbackLabel,
+    val fallbackLabel: String
+        get() = nonLocalizedLabel?.takeIf { it.isNotBlank() }
+            ?: className.substringAfterLast('.')
+
+    fun toDetail(resolvedLabel: String) = ActivityDetail(
+        name = resolvedLabel,
         className = className,
         isExported = exported,
         intentFilterCount = intentFilterCount,
         permission = permission ?: "None",
         launchMode = launchMode,
-        parentActivityName = parentActivityName,
-        labelRes = labelRes,
-        nonLocalizedLabel = nonLocalizedLabel
+        parentActivityName = parentActivityName
     )
 }

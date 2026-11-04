@@ -19,7 +19,5 @@ data class ActivityDetail(
     val intentFilterCount: Int,
     val permission: String,
     val launchMode: String,
-    val parentActivityName: String,
-    val labelRes: Int = 0,
-    val nonLocalizedLabel: String? = null
+    val parentActivityName: String
 )

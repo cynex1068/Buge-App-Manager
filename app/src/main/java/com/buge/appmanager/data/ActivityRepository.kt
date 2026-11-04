@@ -15,33 +15,19 @@ import com.buge.appmanager.model.ActivityDetail
 import com.buge.appmanager.model.AppInfo
 import com.buge.appmanager.util.LogManager
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.lang.reflect.Method
 
 class ActivityRepository(
     private val context: Context,
     private val cacheDao: ActivityCacheDao
 ) {
     private val pm: PackageManager = context.packageManager
+    private val labelResolver = ActivityLabelResolver(context)
 
     companion object {
         private const val TAG = "ActivityRepository"
-        private const val PARALLELISM = 2
-        private const val CACHE_TTL_MS = 0L
-
-        private val getIntentFiltersMethod: Method? by lazy {
-            try {
-                ActivityInfo::class.java.getMethod("getIntentFilters")
-            } catch (_: Throwable) {
-                null
-            }
-        }
+        private const val CACHE_TTL_MS = 10 * 60 * 1000L
     }
 
     suspend fun getInstalledAppsWithActivities(
@@ -51,59 +37,41 @@ class ActivityRepository(
         try {
             LogManager.info(context, "ActivityRepository: getting apps", "showSystem=$showSystemApps, refresh=$forceRefresh")
 
-            val installed: List<PackageInfo> = if (isAtLeastT()) {
-                pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong()))
-            } else {
-                @Suppress("DEPRECATION")
-                pm.getInstalledPackages(PackageManager.GET_ACTIVITIES)
-            }
+            val installed: List<PackageInfo> = installedPackages()
 
-            val semaphore = Semaphore(PARALLELISM)
-            val apps = coroutineScope {
-                installed.map { pkg ->
-                    async {
-                        semaphore.withPermit {
-                            try {
-                                val appInfo = pkg.applicationInfo ?: return@withPermit null
-                                val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                                if (!showSystemApps && isSystem) return@withPermit null
+            val apps = installed.mapNotNull { pkg ->
+                try {
+                    val appInfo = pkg.applicationInfo ?: return@mapNotNull null
+                    val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    if (!showSystemApps && isSystem) return@mapNotNull null
 
-                                val hasActivities = if (!forceRefresh && cacheDao.hasCache(pkg.packageName) > 0) {
-                                    true
-                                } else {
-                                    if (!pkg.activities.isNullOrEmpty()) {
-                                        true
-                                    } else {
-                                        resolvePackageInfo(pkg.packageName)?.activities?.isNotEmpty() == true
-                                    }
-                                }
-                                if (!hasActivities) return@withPermit null
-
-                                AppInfo(
-                                    packageName = pkg.packageName,
-                                    appName = runCatching { pm.getApplicationLabel(appInfo).toString() }.getOrDefault(pkg.packageName),
-                                    versionName = pkg.versionName ?: "",
-                                    versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
-                                        pkg.longVersionCode else {
-                                        @Suppress("DEPRECATION") pkg.versionCode.toLong()
-                                    },
-                                    icon = runCatching { pm.getApplicationIcon(pkg.packageName) }.getOrNull(),
-                                    isSystemApp = isSystem,
-                                    isEnabled = appInfo.enabled,
-                                    installTime = pkg.firstInstallTime,
-                                    updateTime = pkg.lastUpdateTime,
-                                    targetSdkVersion = appInfo.targetSdkVersion,
-                                    minSdkVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
-                                        appInfo.minSdkVersion else 0,
-                                    apkPath = appInfo.sourceDir ?: ""
-                                )
-                            } catch (e: Exception) {
-                                LogManager.warning(context, "ActivityRepository: app info failed", "${pkg.packageName}: ${e.message}")
-                                null
-                            }
-                        }
+                    val versionCode = versionCodeOf(pkg)
+                    val hasActivities = if (!forceRefresh && cacheDao.isValidFor(pkg.packageName, versionCode, CACHE_TTL_MS)) {
+                        true
+                    } else {
+                        resolvePackageInfo(pkg.packageName)?.activities?.isNotEmpty() == true
                     }
-                }.awaitAll().filterNotNull()
+                    if (!hasActivities) return@mapNotNull null
+
+                    AppInfo(
+                        packageName = pkg.packageName,
+                        appName = appInfo.loadLabel(pm).toString(),
+                        versionName = pkg.versionName ?: "",
+                        versionCode = versionCode,
+                        icon = runCatching { appInfo.loadIcon(pm) }.getOrNull(),
+                        isSystemApp = isSystem,
+                        isEnabled = appInfo.enabled,
+                        installTime = pkg.firstInstallTime,
+                        updateTime = pkg.lastUpdateTime,
+                        targetSdkVersion = appInfo.targetSdkVersion,
+                        minSdkVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
+                            appInfo.minSdkVersion else 0,
+                        apkPath = appInfo.sourceDir ?: ""
+                    )
+                } catch (e: Exception) {
+                    LogManager.warning(context, "ActivityRepository: app info failed", "${pkg.packageName}: ${e.message}")
+                    null
+                }
             }
 
             val sorted = apps.sortedBy { it.appName.lowercase() }
@@ -122,40 +90,30 @@ class ActivityRepository(
     ): List<ActivityDetail> = withContext(Dispatchers.IO) {
         try {
             LogManager.info(context, "ActivityRepository: loading activities", "pkg=$packageName, showNotExported=$showNotExported, refresh=$forceRefresh")
-
-            val versionCode = runCatching {
-                if (isAtLeastT()) {
-                    pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0)).longVersionCode
-                } else {
-                    @Suppress("DEPRECATION")
-                    pm.getPackageInfo(packageName, 0).versionCode.toLong()
-                }
-            }.getOrDefault(-1L)
-
+            val pkgInfo = resolvePackageInfo(packageName) ?: return@withContext emptyList()
+            val versionCode = versionCodeOf(pkgInfo)
             if (!forceRefresh && cacheDao.isValidFor(packageName, versionCode, CACHE_TTL_MS)) {
                 val cached = cacheDao.query(packageName)
-                val filtered = cached.filter { it.exported || showNotExported }
-                val sorted = filtered.map { it.toDetail() }.sortedBy { it.name.lowercase() }
+                val visible = if (showNotExported) cached else cached.filter { it.exported }
+                val labels = labelResolver.resolveAll(packageName, visible)
+                val sorted = visible
+                    .mapIndexed { index, entity -> entity.toDetail(labels[index]) }
+                    .sortedBy { it.name.lowercase() }
                 LogManager.info(context, "ActivityRepository: cache hit", "pkg=$packageName, count=${sorted.size}")
                 return@withContext sorted
             }
 
-            val pkgInfo = resolvePackageInfo(packageName) ?: return@withContext emptyList()
+
             val activities = pkgInfo.activities ?: return@withContext emptyList()
 
-            val semaphore = Semaphore(PARALLELISM)
-            val entities = coroutineScope {
-                activities.map { info ->
-                    async {
-                        semaphore.withPermit { info.toCache(packageName, versionCode) }
-                    }
-                }.awaitAll()
-            }
-
+            val entities = activities.map { info -> info.toCache(packageName, versionCode) }
             cacheDao.replace(packageName, entities)
 
-            val filtered = entities.filter { it.exported || showNotExported }
-            val sorted = filtered.map { it.toDetail() }.sortedBy { it.name.lowercase() }
+            val visible = if (showNotExported) entities else entities.filter { it.exported }
+            val labels = labelResolver.resolveAll(packageName, visible)
+            val sorted = visible
+                .mapIndexed { index, entity -> entity.toDetail(labels[index]) }
+                .sortedBy { it.name.lowercase() }
             LogManager.info(context, "ActivityRepository: activities loaded", "pkg=$packageName, count=${sorted.size}")
             sorted
         } catch (e: Exception) {
@@ -164,23 +122,22 @@ class ActivityRepository(
         }
     }
 
-    suspend fun resolveLabel(packageName: String, className: String, labelRes: Int, nonLocalizedLabel: String?, fallback: String): String = withContext(Dispatchers.IO) {
-        if (!nonLocalizedLabel.isNullOrBlank()) return@withContext nonLocalizedLabel
-        if (labelRes == 0) return@withContext fallback
-        try {
-            val pkgInfo = if (isAtLeastT()) {
-                pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong()))
-            } else {
-                @Suppress("DEPRECATION")
-                pm.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES)
-            }
-            val ai = pkgInfo.activities?.firstOrNull { it.name == className } ?: return@withContext fallback
-            val label = runCatching { ai.loadLabel(pm)?.toString() }.getOrNull()
-            if (label.isNullOrBlank()) fallback else label
-        } catch (_: Exception) {
-            fallback
-        }
+    private fun installedPackages(): List<PackageInfo> = if (isAtLeastT()) {
+        pm.getInstalledPackages(
+            PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong())
+        )
+    } else {
+        @Suppress("DEPRECATION")
+        pm.getInstalledPackages(PackageManager.GET_ACTIVITIES)
     }
+
+    private fun versionCodeOf(pkg: PackageInfo): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            pkg.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            pkg.versionCode.toLong()
+        }
 
     private fun resolvePackageInfo(packageName: String): PackageInfo? {
         val info = runCatching {
@@ -195,11 +152,8 @@ class ActivityRepository(
             }
         }.getOrNull()
 
-        val enabled = info?.applicationInfo?.enabled ?: false
-        if (info == null || !enabled) {
-            return archiveInfo(packageName) ?: info
-        }
-        return info
+        if (info != null && info.applicationInfo?.enabled == true) return info
+        return archiveInfo(packageName) ?: info
     }
 
     private fun archiveInfo(packageName: String): PackageInfo? = runCatching {
@@ -210,7 +164,8 @@ class ActivityRepository(
             pm.getApplicationInfo(packageName, 0)
         }
 
-        val apk = File(appInfo.publicSourceDir ?: appInfo.sourceDir ?: return@runCatching null)
+        val path = appInfo.publicSourceDir ?: appInfo.sourceDir ?: return@runCatching null
+        val apk = File(path)
         if (!apk.exists()) return@runCatching null
 
         if (isAtLeastT()) {
@@ -224,48 +179,33 @@ class ActivityRepository(
         }
     }.getOrNull()
 
-    private fun ActivityInfo.toCache(pkg: String, versionCode: Long): ActivityCacheEntity {
-        val fallback = name.substringAfterLast('.')
-        val nonLocalized = nonLocalizedLabel?.toString()?.takeIf { it.isNotBlank() }
+    private fun ActivityInfo.toCache(pkg: String, versionCode: Long) = ActivityCacheEntity(
+        packageName = pkg,
+        className = name,
+        labelRes = labelRes,
+        nonLocalizedLabel = nonLocalizedLabel?.toString()?.takeIf { it.isNotBlank() },
+        exported = exported,
+        enabled = enabled,
+        permission = permission?.takeIf { it.isNotBlank() },
+        intentFilterCount = countIntentFilters(this),
+        launchMode = when (launchMode) {
+            ActivityInfo.LAUNCH_MULTIPLE -> "standard"
+            ActivityInfo.LAUNCH_SINGLE_TOP -> "singleTop"
+            ActivityInfo.LAUNCH_SINGLE_TASK -> "singleTask"
+            ActivityInfo.LAUNCH_SINGLE_INSTANCE -> "singleInstance"
+            else -> "unknown"
+        },
+        parentActivityName = parentActivityName ?: "None",
+        versionCode = versionCode,
+        updatedAt = System.currentTimeMillis()
+    )
 
-        return ActivityCacheEntity(
-            packageName = pkg,
-            className = name,
-            labelRes = labelRes,
-            nonLocalizedLabel = nonLocalized,
-            fallbackLabel = fallback,
-            exported = exported,
-            enabled = enabled,
-            permission = permission?.takeIf { it.isNotBlank() },
-            intentFilterCount = countIntentFilters(this),
-            launchMode = when (launchMode) {
-                ActivityInfo.LAUNCH_MULTIPLE -> "standard"
-                ActivityInfo.LAUNCH_SINGLE_TOP -> "singleTop"
-                ActivityInfo.LAUNCH_SINGLE_TASK -> "singleTask"
-                ActivityInfo.LAUNCH_SINGLE_INSTANCE -> "singleInstance"
-                else -> "unknown"
-            },
-            parentActivityName = parentActivityName ?: "None",
-            versionCode = versionCode,
-            updatedAt = System.currentTimeMillis()
-        )
-    }
-
-    private fun countIntentFilters(info: ActivityInfo): Int = try {
+    private fun countIntentFilters(info: ActivityInfo): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val m = getIntentFiltersMethod
-            if (m != null) {
-                val filters = m.invoke(info) as? Array<*>
-                filters?.size ?: 0
-            } else {
-                if (info.exported) 1 else 0
-            }
+            info.intentFilters?.size ?: 0
         } else {
             if (info.exported) 1 else 0
         }
-    } catch (_: Throwable) {
-        if (info.exported) 1 else 0
-    }
 
     fun launchActivity(packageName: String, className: String): Boolean = try {
         val intent = Intent().apply {
