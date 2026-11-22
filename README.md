@@ -85,7 +85,7 @@
 | ROOT        | Device has been rooted and authorized                   |
 | ADB Command | Use other device and start the service with adb command |
 
-Choose between **Shizuku**, **Dhizuku** or **ROOT** authorization.
+Choose between **Shizuku**, **Dhizuku**, **ROOT** or **ADB Command** authorization.
 
 > **Note**: [Shizuku](https://shizuku.rikka.app/) or [Dhizuku](https://github.com/iamr0s/Dhizuku) is required for advanced permission management features.
 
