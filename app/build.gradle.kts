@@ -19,12 +19,18 @@ android {
         applicationId = "com.buge.appmanager"
         minSdk = 26
         targetSdk = 34
-        versionCode = 242
-        versionName = "13.89.153"
+        versionCode = 257
+        versionName = "13.95.162"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 
@@ -76,6 +82,13 @@ android {
         checkReleaseBuilds = false
         abortOnError = false
     }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 kotlin {
@@ -98,6 +111,7 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.viewpager2)
     implementation(libs.androidx.dynamicanimation)
+    implementation(libs.androidx.documentfile)
     implementation(libs.google.material)
     implementation(libs.rikka.shizuku.api)
     implementation(libs.rikka.shizuku.provider)
@@ -107,4 +121,12 @@ dependencies {
     implementation(libs.google.gson)
     implementation(libs.squareup.okhttp)
     implementation(libs.lsposed.hiddenapibypass)
+    testImplementation(libs.junit)
+    testImplementation(libs.truth)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.espresso.core)
 }

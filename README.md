@@ -1,17 +1,23 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/refs/heads/main/images/icons/icon.png" alt="Buge App Manager Icon" width="120"/>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/dark/icon.svg"/>
+    <img src="assets/readme/light/icon.svg" alt="Buge App Manager Icon" width="150"/>
+  </picture>
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/refs/heads/main/images/title.svg" alt="Buge App Manager" width="520"/>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/dark/title.svg"/>
+    <img src="assets/readme/light/title.svg" alt="Buge App Manager" width="520"/>
+  </picture>
 </p>
 
 
 <p align="center">
-  <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Android/android2.svg">
-  <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Kotlin/kotlin2.svg">
-  <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Github/github3.svg">
-  <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/LicenceGPLv3/licencegplv32.svg">
+  <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Android/android2.svg" alt="Android">
+  <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Kotlin/kotlin2.svg" alt="Kotlin">
+  <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/Github/github3.svg" alt="GitHub">
+  <img src="https://ziadoua.github.io/m3-Markdown-Badges/badges/LicenceGPLv3/licencegplv32.svg" alt="GPL 3.0">
 </p>
 
 **Buge App Manager** is a powerful Android utility application designed for advanced app and permission management. Built with **Material Design 3 Expressive**, it offers a modern and intuitive interface for granular control over your device.
@@ -20,13 +26,13 @@
 
 ## Screenshots
 
-<div style="overflow-x: auto; white-space: nowrap; padding: 10px 0;">
+<div align="center">
 
-<img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/main/images/Screenshot_Apps.png" width="260" style="display: inline-block; margin-right: 12px;" />
-  <img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/main/images/Screenshot_Permissions.png" width="260" style="display: inline-block; margin-right: 12px;" />
-  <img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/main/images/Screenshot_Activities.png" width="260" style="display: inline-block; margin-right: 12px;" />
-  <img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/main/images/Screenshot_Settings.png" width="260" style="display: inline-block; margin-right: 12px;" />
-  <img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/main/images/Screenshot_Details.png" width="260" style="display: inline-block; margin-right: 12px;" />
+<img src="assets/readme/screenshots/Screenshot_Apps.png" alt="Buge App Manager apps screen" width="30%">
+<img src="assets/readme/screenshots/Screenshot_Permissions.png" alt="Buge App Manager permissions screen" width="30%">
+<img src="assets/readme/screenshots/Screenshot_Activities.png" alt="Buge App Manager activities screen" width="30%">
+<img src="assets/readme/screenshots/Screenshot_Settings.png" alt="Buge App Manager settings screen" width="30%">
+<img src="assets/readme/screenshots/Screenshot_Details.png" alt="Buge App Manager app details screen" width="30%">
 
 </div>
 
@@ -71,14 +77,15 @@
 
 ## Requirements
 
-| Requirement | Minimum Version                       |
-| ----------- | ------------------------------------- |
-| Android OS  | 8.0 (API 26) or higher                |
-| Shizuku     | Installed and authorized              |
-| Dhizuku     | Installed and authorized              |
-| ROOT        | Device has been rooted and authorized |
+| Requirement | Minimum Version                                         |
+| ----------- | ------------------------------------------------------- |
+| Android OS  | 8.0 (API 26) or higher                                  |
+| Shizuku     | Installed and authorized                                |
+| Dhizuku     | Installed and authorized                                |
+| ROOT        | Device has been rooted and authorized                   |
+| ADB Command | Use other device and start the service with adb command |
 
-Choose between **Shizuku**, **Dhizuku** or **ROOT** authorization.
+Choose between **Shizuku**, **Dhizuku**, **ROOT** or **ADB Command** authorization.
 
 > **Note**: [Shizuku](https://shizuku.rikka.app/) or [Dhizuku](https://github.com/iamr0s/Dhizuku) is required for advanced permission management features.
 
@@ -95,6 +102,8 @@ Choose between **Shizuku**, **Dhizuku** or **ROOT** authorization.
 - Русский - ru
 
 - Українська - uk
+
+- Türkçe - tr
 
 - Português - pt
 
@@ -118,13 +127,7 @@ Choose between **Shizuku**, **Dhizuku** or **ROOT** authorization.
 
 ## Installation
 
-[<img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/refs/heads/main/images/README/Release/get-it-on-github.svg"
-    alt="Get it on GitHub"
-    height="80">](https://github.com/BugeStudioTeam/Buge-App-Manager/releases)[<img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/refs/heads/main/images/README/Release/get-it-on-telegram.svg"
- alt="Get it on Telegram"
- height="80">](https://t.me/bugestudio)[<img src="https://raw.githubusercontent.com/BugeStudioTeam/Buge-App-Manager/refs/heads/main/images/README/Release/get-it-on-fdroid.svg"
-    alt="Get it on F-Droid"
-    height="80">](https://f-droid.org/packages/com.buge.appmanager/)
+[![Get it on GitHub](assets/readme/release/get-it-on-github.svg)](https://github.com/BugeStudioTeam/Buge-App-Manager/releases) [![Get it on Telegram](assets/readme/release/get-it-on-telegram.svg)](https://t.me/bugestudio) [![Get it on F-Droid](assets/readme/release/get-it-on-fdroid.svg)](https://f-droid.org/packages/com.buge.appmanager/)
  
 ---
 
@@ -137,6 +140,22 @@ Choose between **Shizuku**, **Dhizuku** or **ROOT** authorization.
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=BugeStudioTeam/Buge-App-Manager&type=date&legend=top-left&sealed_token=jZTygO4Pz6rzviCijN8nJplRBnY9ehHv9qlEL3uW_EVikw63qBIraoS0O7xV3lszffGX8ONjKeKo47xT3Kv8g6xwd27TbnZVekUxbRDLPGZjUlV7vc-jPg" />
  </picture>
 </a>
+
+---
+
+## Support
+
+If you find Buge App Manager useful, consider supporting the project.<br>
+Your support helps keep development going!
+
+<p align="center">
+  <a href="https://bugestudio.website/support/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/readme/dark/support.svg"/>
+      <img src="assets/readme/light/support.svg" alt="Support Us"/>
+    </picture>
+  </a>
+</p>
 
 ---
 

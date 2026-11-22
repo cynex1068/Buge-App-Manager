@@ -4,18 +4,37 @@
 package com.buge.appmanager.util
 
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import java.io.BufferedWriter
 import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
 object LogManager {
 
-    private const val LOG_FILE_NAME = "app_logs.txt"
+    private const val LOG_FILE_NAME = "app_logs.json"
     private const val MAX_LOG_SIZE = 1024 * 1024
     private const val MAX_LOG_LINES = 2000
+    private const val LOGCAT_DIR = "logcat_recordings"
+    private const val RECORDING_PREF = "logcat_recordings_pref"
+    private const val RECORDING_LIST_KEY = "recordings"
+
+    enum class RecordStatus {
+        Idle,
+        RecordingInProgress,
+        SaveRecordedLogs,
+        ;
+
+        fun isIdle() = this == Idle
+    }
 
     enum class LogType(val display: String) {
         INFO("INFO"),
@@ -62,52 +81,329 @@ object LogManager {
             return SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(timestamp))
         }
 
+        fun toLine(): String {
+            val time = getDisplayTime()
+            val level = type.display
+            val tagPart = tag?.let { " $it" } ?: ""
+            return "$time $level:$tagPart $message"
+        }
+
         fun toCsvString(): String {
             val date = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date(timestamp))
             return "$date,${type.display},${tag ?: ""},${message.replace(",", ";")},${details?.replace(",", ";") ?: ""}"
         }
     }
 
-    private val lock = Any()
+    data class RecordingFileInfo(
+        val fileName: String,
+        val uri: Uri,
+        val isCustomLocation: Boolean,
+        val timestamp: Long
+    )
 
+    data class SavedRecordingInfo(
+        val fileName: String,
+        val path: String,
+        val isCustom: Boolean,
+        val timestamp: Long
+    )
+
+    private data class ParsedLogcatLine(
+        val time: Long,
+        val level: String,
+        val tag: String,
+        val message: String
+    )
+
+    private val lock = Any()
+    private val recordingLock = Any()
+
+    private var initialized = false
     private var isEnabled = false
     private val logEntries = mutableListOf<LogEntry>()
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    private val recordStateListeners = java.util.concurrent.CopyOnWriteArrayList<(RecordStatus) -> Unit>()
     private var currentSessionId = System.currentTimeMillis()
 
     private val logTag = "BugeAppManager"
 
-    private var logcatReaderThread: Thread? = null
-    private var isLogcatReading = false
+    private val logcatRegex = Regex("""(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\w)/(.+?)\(\s*\d+\):\s?(.*)""")
 
-    private val processedLogcatKeys = java.util.Collections.synchronizedSet(mutableSetOf<String>())
-    private var lastLogcatTimestamp = 0L
+    private val captureExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "LogcatCapture").apply { isDaemon = true }
+    }
+
+    private var logcatWatermark: Long = 0L
+
+    @Volatile
+    private var recordStatus: RecordStatus = RecordStatus.Idle
+
+    private var recordingFileInfo: RecordingFileInfo? = null
+    private var recordingWriter: BufferedWriter? = null
+
+    private val gson = Gson()
 
     fun init(context: Context) {
+        synchronized(lock) {
+            if (initialized) return
+            initialized = true
+        }
+
+        loadLogsFromFile(context)
+
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            logcatWatermark = now
+        }
+
         isEnabled = PreferencesManager.getLoggingEnabled(context)
         currentSessionId = System.currentTimeMillis()
         info(context, "LogManager initialized", "Session started: $currentSessionId")
         info(context, "Device Info", "Model: ${Build.MODEL}, SDK: ${Build.VERSION.SDK_INT}, Android: ${Build.VERSION.RELEASE}")
-        loadLogsFromFile(context)
-        startLogcatReader(context)
+        if (isEnabled) {
+            submitCapture { ingestLogcat(context, Long.MAX_VALUE) }
+        }
     }
 
     fun isEnabled(): Boolean = isEnabled
 
     fun setEnabled(context: Context, enabled: Boolean) {
-        isEnabled = enabled
-        PreferencesManager.setLoggingEnabled(context, enabled)
         if (enabled) {
+            isEnabled = true
+            PreferencesManager.setLoggingEnabled(context, true)
+            val enabledAt = System.currentTimeMillis()
             info(context, "Logging enabled", "Session resumed")
-            processedLogcatKeys.clear()
-            lastLogcatTimestamp = System.currentTimeMillis()
-            startLogcatReader(context)
+            submitCapture {
+                synchronized(lock) {
+                    if (enabledAt > logcatWatermark) {
+                        logcatWatermark = enabledAt
+                    }
+                }
+                ingestLogcat(context, Long.MAX_VALUE)
+            }
         } else {
+            val disabledAt = System.currentTimeMillis()
+            isEnabled = false
+            PreferencesManager.setLoggingEnabled(context, false)
             info(context, "Logging disabled", "Session paused")
-            stopLogcatReader()
+            submitCapture { ingestLogcat(context, disabledAt) }
             Log.d(logTag, "Logging disabled by user")
         }
         notifyListeners()
+    }
+
+    fun getRecordStatus(): RecordStatus = recordStatus
+
+    fun setRecordStatus(context: Context, status: RecordStatus) {
+        if (recordStatus == status) return
+        recordStatus = status
+        notifyRecordStateListeners(status)
+
+        when (status) {
+            RecordStatus.Idle -> Unit
+            RecordStatus.RecordingInProgress -> startRecording(context)
+            RecordStatus.SaveRecordedLogs -> stopRecording(context)
+        }
+    }
+
+    fun addRecordStateListener(listener: (RecordStatus) -> Unit) {
+        if (!recordStateListeners.contains(listener)) {
+            recordStateListeners.add(listener)
+        }
+    }
+
+    fun removeRecordStateListener(listener: (RecordStatus) -> Unit) {
+        recordStateListeners.remove(listener)
+    }
+
+    private fun notifyRecordStateListeners(status: RecordStatus) {
+        recordStateListeners.forEach { it.invoke(status) }
+    }
+
+    private fun startRecording(context: Context) {
+        synchronized(recordingLock) {
+            if (recordingWriter != null) {
+                Log.w(logTag, "startRecording called while already recording, ignored")
+                return
+            }
+            val fileInfo = createFileToStartRecording(context)
+            if (fileInfo == null) {
+                Log.e(logTag, "startRecording failed: createFile returned null")
+                recordStatus = RecordStatus.Idle
+                notifyRecordStateListeners(recordStatus)
+                return
+            }
+            val writer = createBufferedWriter(context, fileInfo)
+            if (writer == null) {
+                Log.e(logTag, "startRecording failed: createBufferedWriter returned null")
+                recordStatus = RecordStatus.Idle
+                notifyRecordStateListeners(recordStatus)
+                return
+            }
+            recordingFileInfo = fileInfo
+            recordingWriter = writer
+            Log.d(logTag, "Recording started: ${fileInfo.fileName}")
+        }
+    }
+
+    private fun stopRecording(context: Context) {
+        synchronized(recordingLock) {
+            val info = recordingFileInfo
+            val writer = recordingWriter
+            recordingWriter = null
+            recordingFileInfo = null
+
+            var success = false
+            if (writer != null) {
+                try {
+                    writer.flush()
+                    writer.close()
+                    success = true
+                } catch (e: Exception) {
+                    Log.e(logTag, "Failed to close recording writer: ${e.message}", e)
+                }
+            }
+
+            recordStatus = RecordStatus.Idle
+            notifyRecordStateListeners(recordStatus)
+
+            if (success && info != null) {
+                notifyListeners()
+                Log.d(logTag, "Recording saved: ${info.fileName}")
+            } else {
+                Log.e(logTag, "Recording stop failed or no active recording")
+            }
+        }
+    }
+
+    private fun createFileToStartRecording(context: Context): RecordingFileInfo? {
+        val createFileResult = createFile(context, recording = true) ?: return null
+        val (uri, isCustomLocation, timestamp) = createFileResult
+
+        val fileName = if (isCustomLocation) {
+            DocumentFile.fromSingleUri(context, uri)?.name
+        } else {
+            uri.lastPathSegment?.substringAfterLast("/")
+        } ?: return null
+
+        saveRecordingInfo(
+            context,
+            SavedRecordingInfo(
+                fileName = fileName,
+                path = uri.toString(),
+                isCustom = isCustomLocation,
+                timestamp = timestamp
+            )
+        )
+
+        return RecordingFileInfo(
+            fileName = fileName,
+            uri = uri,
+            isCustomLocation = isCustomLocation,
+            timestamp = timestamp
+        )
+    }
+
+    private fun createFile(context: Context, recording: Boolean): Triple<Uri, Boolean, Long>? {
+        val date = Date()
+        val timeStamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault()).format(date)
+        val fileName = buildString {
+            append("logcat_")
+            if (recording) append("recording_")
+            append(timeStamp)
+        }
+
+        val customSaveLocation = PreferencesManager.getLogcatSaveLocation(context)
+
+        return if (customSaveLocation.isEmpty()) {
+            val dir = File(context.filesDir, LOGCAT_DIR)
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "$fileName.txt")
+            Triple(Uri.fromFile(file), false, date.time)
+        } else {
+            try {
+                val treeUri = Uri.parse(customSaveLocation)
+                val documentFile = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+                val created = documentFile.createFile("text/plain", fileName) ?: return null
+                Triple(created.uri, true, date.time)
+            } catch (e: Exception) {
+                Log.e(logTag, "createFile SAF failed: ${e.message}", e)
+                null
+            }
+        }
+    }
+
+    private fun createBufferedWriter(context: Context, fileInfo: RecordingFileInfo): BufferedWriter? {
+        return try {
+            if (fileInfo.isCustomLocation) {
+                context.contentResolver.openOutputStream(fileInfo.uri)?.bufferedWriter()
+            } else {
+                val file = File(fileInfo.uri.path ?: return null)
+                val parent = file.parentFile
+                if (parent != null && !parent.exists()) parent.mkdirs()
+                file.bufferedWriter()
+            }
+        } catch (e: IOException) {
+            Log.e(logTag, "createBufferedWriter failed: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun writeToRecording(entry: LogEntry) {
+        val writer = recordingWriter ?: return
+        try {
+            writer.write(entry.getFormattedMessage())
+            writer.newLine()
+        } catch (e: Exception) {
+            Log.e(logTag, "writeToRecording failed: ${e.message}", e)
+        }
+    }
+
+    private fun saveRecordingInfo(context: Context, info: SavedRecordingInfo) {
+        try {
+            val list = getSavedRecordings(context).toMutableList()
+            list.add(0, info)
+            val json = gson.toJson(list)
+            context.getSharedPreferences(RECORDING_PREF, Context.MODE_PRIVATE)
+                .edit()
+                .putString(RECORDING_LIST_KEY, json)
+                .apply()
+        } catch (e: Exception) {
+            Log.e(logTag, "saveRecordingInfo failed: ${e.message}", e)
+        }
+    }
+
+    fun getSavedRecordings(context: Context): List<SavedRecordingInfo> {
+        return try {
+            val json = context.getSharedPreferences(RECORDING_PREF, Context.MODE_PRIVATE)
+                .getString(RECORDING_LIST_KEY, "[]") ?: "[]"
+            val type = object : TypeToken<List<SavedRecordingInfo>>() {}.type
+            gson.fromJson(json, type) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun deleteSavedRecording(context: Context, info: SavedRecordingInfo) {
+        try {
+            val uri = Uri.parse(info.path)
+            if (info.isCustom) {
+                val doc = DocumentFile.fromSingleUri(context, uri)
+                doc?.delete()
+            } else {
+                val file = File(uri.path ?: return)
+                if (file.exists()) file.delete()
+            }
+            val list = getSavedRecordings(context).toMutableList()
+            list.removeAll { it.path == info.path }
+            val json = gson.toJson(list)
+            context.getSharedPreferences(RECORDING_PREF, Context.MODE_PRIVATE)
+                .edit()
+                .putString(RECORDING_LIST_KEY, json)
+                .apply()
+        } catch (e: Exception) {
+            Log.e(logTag, "deleteSavedRecording failed: ${e.message}", e)
+        }
     }
 
     fun getLogs(): List<LogEntry> {
@@ -130,12 +426,20 @@ object LogManager {
     }
 
     fun clearLogs(context: Context) {
+        val now = System.currentTimeMillis()
         synchronized(lock) {
             logEntries.clear()
+            logcatWatermark = now
         }
-        processedLogcatKeys.clear()
-        saveLogsToFile(context)
-        info(context, "Logs cleared", "All logs have been cleared")
+        PreferencesManager.setLogClearTimestamp(context, now)
+        try {
+            val file = File(context.filesDir, LOG_FILE_NAME)
+            if (file.exists()) {
+                file.delete()
+            }
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to delete log file on clear", e)
+        }
         notifyListeners()
     }
 
@@ -198,160 +502,114 @@ object LogManager {
         }
     }
 
-    private fun startLogcatReader(context: Context) {
-        if (!isEnabled) return
-        if (isLogcatReading) return
-        if (logcatReaderThread?.isAlive == true) return
-
-        isLogcatReading = true
-        logcatReaderThread = Thread {
-            readLogcat(context)
-        }.apply {
-            isDaemon = true
-            start()
-        }
-        Log.d(logTag, "Logcat reader started")
-    }
-
-    private fun stopLogcatReader() {
-        isLogcatReading = false
-        logcatReaderThread?.interrupt()
-        logcatReaderThread = null
-        Log.d(logTag, "Logcat reader stopped")
-    }
-
-    private fun readLogcat(context: Context) {
+    private fun submitCapture(task: () -> Unit) {
         try {
-            val process = Runtime.getRuntime().exec(arrayOf(
-                "logcat",
-                "-v", "time",
-                "-d",
-                "*:E"
-            ))
-
-            val reader = process.inputStream.bufferedReader()
-            var buffer = mutableListOf<String>()
-            var lastReadTime = System.currentTimeMillis()
-
-            while (isLogcatReading) {
-                var line: String? = reader.readLine()
-                while (line != null && isLogcatReading) {
-                    buffer.add(line)
-                    if (buffer.size > 100) {
-                        flushBuffer(context, buffer)
-                        buffer = mutableListOf()
-                    }
-                    line = reader.readLine()
-                }
-
-                if (buffer.isNotEmpty()) {
-                    flushBuffer(context, buffer)
-                    buffer = mutableListOf()
-                }
-
-                Thread.sleep(2000)
-
-                if (System.currentTimeMillis() - lastReadTime > 60000) {
-                    lastReadTime = System.currentTimeMillis()
-                    process.destroy()
-                    break
+            captureExecutor.execute {
+                try {
+                    task()
+                } catch (e: Exception) {
+                    Log.e(logTag, "Logcat capture failed: ${e.message}", e)
                 }
             }
-
-            if (buffer.isNotEmpty()) {
-                flushBuffer(context, buffer)
-            }
-
-        } catch (e: InterruptedException) {
-        } catch (e: Exception) {
-            Log.e(logTag, "Logcat reader error: ${e.message}", e)
-        } finally {
-            isLogcatReading = false
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            Log.e(logTag, "Logcat capture rejected: ${e.message}", e)
         }
     }
 
-    private fun flushBuffer(context: Context, buffer: MutableList<String>) {
-        if (buffer.isEmpty()) return
-
-        val regex = Regex("""(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\w)/([^:]+):(.*)""")
-
-        for (line in buffer) {
-            try {
-                val match = regex.find(line)
-                if (match != null) {
-                    val timeStr = match.groupValues[1]
-                    val level = match.groupValues[2]
-                    val tag = match.groupValues[3].trim()
-                    val message = match.groupValues[4].trim()
-
-                    if (message.isEmpty()) continue
-                    if (tag == "BugeAppManager") continue
-
-                    if (level != "E" && level != "F") continue
-
-                    val uniqueKey = "$timeStr|$tag|$message"
-
-                    if (processedLogcatKeys.contains(uniqueKey)) {
-                        continue
-                    }
-
-                    processedLogcatKeys.add(uniqueKey)
-
-                    if (processedLogcatKeys.size > 5000) {
-                        val iterator = processedLogcatKeys.iterator()
-                        var count = 0
-                        while (iterator.hasNext() && count < 2500) {
-                            iterator.next()
-                            iterator.remove()
-                            count++
-                        }
-                    }
-
-                    val logcatTime = parseLogcatTime(timeStr)
-
-                    val entry = LogEntry(
-                        timestamp = logcatTime,
-                        type = LogType.ERROR,
-                        message = message,
-                        details = "Logcat",
-                        tag = tag,
-                        threadName = null,
-                        stackTrace = null,
-                        isLogcat = true
-                    )
-
-                    synchronized(lock) {
-                        logEntries.add(0, entry)
-                        while (logEntries.size > MAX_LOG_LINES) {
-                            logEntries.removeAt(logEntries.lastIndex)
-                        }
-                    }
-
-                    saveLogsToFile(context)
-                    notifyListeners()
-                }
-            } catch (e: Exception) {
-            }
-        }
-
-        buffer.clear()
-    }
-
-    private fun parseLogcatTime(timeStr: String): Long {
+    private fun readLogcatLines(): List<String>? {
+        var process: Process? = null
         return try {
-            val currentYear = SimpleDateFormat("yyyy", Locale.getDefault()).format(Date())
-            val fullTime = "$currentYear-$timeStr"
-            val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
-            format.parse(fullTime)?.time ?: System.currentTimeMillis()
+            process = ProcessBuilder("logcat", "-v", "time", "-d", "*:V")
+                .redirectErrorStream(true)
+                .start()
+            process.inputStream.bufferedReader().use { it.readLines() }
         } catch (e: Exception) {
-            System.currentTimeMillis()
+            Log.e(logTag, "Logcat read error: ${e.message}", e)
+            null
+        } finally {
+            process?.destroy()
         }
+    }
+
+    private fun ingestLogcat(context: Context, until: Long) {
+        val lines = readLogcatLines() ?: return
+
+        val year = Calendar.getInstance().get(Calendar.YEAR)
+        val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+        val parsed = ArrayList<ParsedLogcatLine>()
+
+        for (line in lines) {
+            val match = logcatRegex.find(line) ?: continue
+            val message = match.groupValues[4].trim()
+            if (message.isEmpty()) continue
+            val tag = match.groupValues[3].trim()
+            if (tag == logTag) continue
+            val time = (try {
+                format.parse("$year-${match.groupValues[1]}")?.time
+            } catch (e: Exception) {
+                null
+            }) ?: continue
+            parsed.add(ParsedLogcatLine(time, match.groupValues[2], tag, message))
+        }
+
+        val accepted = ArrayList<LogEntry>()
+
+        synchronized(lock) {
+            val lowerBound = logcatWatermark
+            var maxTime = lowerBound
+
+            for (item in parsed) {
+                if (item.time <= lowerBound || item.time > until) continue
+
+                val logType = when (item.level) {
+                    "V" -> LogType.VERBOSE
+                    "D" -> LogType.DEBUG
+                    "I" -> LogType.INFO
+                    "W" -> LogType.WARNING
+                    "E" -> LogType.ERROR
+                    "F" -> LogType.ERROR
+                    else -> LogType.LOGCAT
+                }
+
+                val entry = LogEntry(
+                    timestamp = item.time,
+                    type = logType,
+                    message = item.message,
+                    details = null,
+                    tag = item.tag,
+                    threadName = null,
+                    stackTrace = null,
+                    isLogcat = true
+                )
+
+                accepted.add(entry)
+                logEntries.add(0, entry)
+                if (item.time > maxTime) maxTime = item.time
+            }
+
+            while (logEntries.size > MAX_LOG_LINES) {
+                logEntries.removeAt(logEntries.lastIndex)
+            }
+
+            val newWatermark = if (until == Long.MAX_VALUE) maxTime else maxOf(maxTime, until)
+            if (newWatermark > logcatWatermark) {
+                logcatWatermark = newWatermark
+            }
+        }
+
+        if (accepted.isEmpty()) return
+
+        for (entry in accepted) {
+            writeToRecording(entry)
+        }
+
+        saveLogsToFile(context)
+        notifyListeners()
     }
 
     fun refreshLogcat(context: Context) {
         if (!isEnabled) return
-        stopLogcatReader()
-        startLogcatReader(context)
+        submitCapture { ingestLogcat(context, Long.MAX_VALUE) }
     }
 
     fun debug(context: Context, message: String, details: String? = null, tag: String? = null) {
@@ -489,6 +747,8 @@ object LogManager {
             }
         }
 
+        writeToRecording(entry)
+
         saveLogsToFile(context)
         notifyListeners()
     }
@@ -498,26 +758,14 @@ object LogManager {
         if (!file.exists()) return
 
         try {
-            val content = file.readText()
-            if (content.isNotEmpty()) {
-                val lines = content.split("\n").filter { it.isNotEmpty() }
-                for (line in lines) {
-                    try {
-                        val entry = LogEntry(
-                            timestamp = System.currentTimeMillis(),
-                            type = LogType.INFO,
-                            message = line.take(200),
-                            details = "Loaded from file",
-                            tag = null,
-                            threadName = null,
-                            stackTrace = null,
-                            isLogcat = false
-                        )
-                        synchronized(lock) {
-                            logEntries.add(entry)
-                        }
-                    } catch (e: Exception) {
-                    }
+            val json = file.readText()
+            if (json.isBlank()) return
+            val type = object : TypeToken<List<LogEntry>>() {}.type
+            val loaded: List<LogEntry>? = gson.fromJson(json, type)
+            if (loaded != null) {
+                synchronized(lock) {
+                    logEntries.clear()
+                    logEntries.addAll(loaded.filterNotNull().take(MAX_LOG_LINES))
                 }
             }
         } catch (e: Exception) {
@@ -532,13 +780,7 @@ object LogManager {
                 snapshot = logEntries.toList()
             }
             val file = File(context.filesDir, LOG_FILE_NAME)
-            file.printWriter().use { printer ->
-                snapshot.reversed().forEach { entry ->
-                    if (entry != null) {
-                        printer.println(entry.getFormattedMessage())
-                    }
-                }
-            }
+            file.writeText(gson.toJson(snapshot))
         } catch (e: Exception) {
             Log.e(logTag, "Failed to save logs to file", e)
         }
@@ -588,6 +830,16 @@ object LogManager {
     }
 
     fun shutdown() {
-        stopLogcatReader()
+        captureExecutor.shutdownNow()
+        synchronized(recordingLock) {
+            try {
+                recordingWriter?.flush()
+                recordingWriter?.close()
+            } catch (e: Exception) {
+            }
+            recordingWriter = null
+            recordingFileInfo = null
+            recordStatus = RecordStatus.Idle
+        }
     }
 }
