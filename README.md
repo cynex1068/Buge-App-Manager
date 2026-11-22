@@ -77,12 +77,13 @@
 
 ## Requirements
 
-| Requirement | Minimum Version                       |
-| ----------- | ------------------------------------- |
-| Android OS  | 8.0 (API 26) or higher                |
-| Shizuku     | Installed and authorized              |
-| Dhizuku     | Installed and authorized              |
-| ROOT        | Device has been rooted and authorized |
+| Requirement | Minimum Version                                         |
+| ----------- | ------------------------------------------------------- |
+| Android OS  | 8.0 (API 26) or higher                                  |
+| Shizuku     | Installed and authorized                                |
+| Dhizuku     | Installed and authorized                                |
+| ROOT        | Device has been rooted and authorized                   |
+| ADB Command | Use other device and start the service with adb command |
 
 Choose between **Shizuku**, **Dhizuku** or **ROOT** authorization.
 
